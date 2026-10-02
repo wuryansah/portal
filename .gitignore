@@ -1,0 +1,49 @@
+# ---------------------------------------------------------------------------
+# SECRETS — never commit
+# ---------------------------------------------------------------------------
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# ---------------------------------------------------------------------------
+# PRODUCTION DATA — contains PII and financial records
+# users / billing / payments / support_tickets / ticket_messages
+# ---------------------------------------------------------------------------
+*.sql
+*.sql.gz
+uploads/
+
+# Bank Virtual Account reports and import review artifacts.
+# Leading slash anchors to repo root so vendor/ library assets are untouched.
+# Covers va_preview_*.xls, va_skip_review_*.csv, sep21_2026_preview.xls, etc.
+/*.xls
+/*.xlsx
+/*.csv
+
+# ---------------------------------------------------------------------------
+# TOOLING CACHES
+# .opencode/ self-ignores its own node_modules via .opencode/.gitignore
+# ---------------------------------------------------------------------------
+.codegraph/
+.claude/
+.qwen/
+
+# ---------------------------------------------------------------------------
+# COMPOSER
+# vendor/ is intentionally NOT ignored. composer.lock is committed, and this
+# app is deployed to shared hosting where `composer install` may not run.
+# Delete this block if you prefer to install dependencies on deploy.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# OS / EDITOR CRUFT
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*~
+.idea/
+.vscode/
