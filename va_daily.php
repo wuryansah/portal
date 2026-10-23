@@ -12,6 +12,7 @@
 
 require_once __DIR__ . '/env.php';
 require_once __DIR__ . '/lib/va_daily_lib.php';
+require_once __DIR__ . '/lib/va_daily_report.php';
 
 date_default_timezone_set(getenv('APP_TIMEZONE') ?: 'Asia/Jakarta');
 
@@ -82,6 +83,42 @@ $log = static function (string $message) use ($logPath): void {
     @file_put_contents($logPath, '[' . date('Y-m-d H:i:s') . '] ' . $message . "\n", FILE_APPEND);
 };
 
+$statePath = $workDir . '/state.json';
+$state = va_state_read($statePath);
+$auditUserId = (int) $config['audit_user_id'];
+$recipients = array_values(array_filter((array) ($config['recipients'] ?? [])));
+$runGroups = [];
+$today = date('Y-m-d');
+
+/**
+ * Laporkan kegagalan keras lewat email (sekali per pesan identik per hari).
+ */
+$sendFatal = static function (string $message) use (&$state, $statePath, $recipients, $noEmail, $log, $today, $dryRun): void {
+    $log('FATAL: ' . $message);
+    if ($noEmail || $recipients === []) return;
+    $sig = sha1((string) preg_replace('/\s+/', ' ', $message));
+    if (($state['lastFatalSignature'] ?? null) === $sig && ($state['lastFatalDate'] ?? null) === $today) {
+        $log('alert fatal identik sudah dikirim hari ini, tidak diulang');
+        return;
+    }
+    $report = va_build_report(['date' => $today, 'dryRun' => $dryRun, 'groups' => [], 'fatal' => $message]);
+    $results = va_send_report($report, $recipients);
+    $sent = false;
+    foreach ($results as $to => $result) {
+        if (!empty($result['ok'])) {
+            $sent = true;
+            $log("alert email terkirim ke $to");
+        } else {
+            $log("EMAIL GAGAL ke $to: " . ($result['error'] ?? 'unknown'));
+        }
+    }
+    if ($sent) {
+        $state['lastFatalSignature'] = $sig;
+        $state['lastFatalDate'] = $today;
+        va_state_write($statePath, $state);
+    }
+};
+
 $log('=== run ===' . ($dryRun ? ' (dry-run)' : '') . ($noEmail ? ' (no-email)' : ''));
 
 if (!va_is_run_day((int) date('w'))) {
@@ -91,7 +128,7 @@ if (!va_is_run_day((int) date('w'))) {
 }
 
 if (!is_dir($baseDir)) {
-    $log("share tidak bisa diakses: $baseDir");
+    $sendFatal("Share tidak bisa diakses: $baseDir");
     fwrite(STDERR, "Share tidak bisa diakses: $baseDir\n");
     exit(1);
 }
@@ -101,7 +138,7 @@ try {
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
     ]);
 } catch (Throwable $e) {
-    $log('MySQL tidak bisa dihubungi: ' . $e->getMessage());
+    $sendFatal('MySQL tidak bisa dihubungi: ' . $e->getMessage());
     fwrite(STDERR, "MySQL tidak bisa dihubungi\n");
     exit(1);
 }
@@ -110,11 +147,6 @@ $periodCounts = [];
 foreach ($db->query("SELECT billing_period, COUNT(*) AS n FROM billing GROUP BY billing_period") as $row) {
     $periodCounts[(string) $row['billing_period']] = (int) $row['n'];
 }
-
-$statePath = $workDir . '/state.json';
-$state = va_state_read($statePath);
-$auditUserId = (int) $config['audit_user_id'];
-$runGroups = [];
 
 /* Pindai folder induk + subfolder bulan berjalan dan bulan sebelumnya. */
 $nowYm = ['year' => (int) date('Y'), 'month' => (int) date('n')];
@@ -295,7 +327,13 @@ foreach ($groups as $group) {
         'period' => $period,
         'periodRows' => (int) $periodCounts[$period],
         'files' => $group['files'],
-        'booked' => $bookedRows,
+        'booked' => array_map(static fn(array $row): array => [
+            'unit' => (string) ($row['unit_number'] ?? ''),
+            'reference' => 'VA-' . (string) ($row['va_number'] ?? ''),
+            'amount' => va_amount_value($row['amount'] ?? 0),
+            'txn_date' => (string) ($row['txn_date'] ?? ''),
+            'source_file' => (string) ($row['source_file'] ?? ''),
+        ], $bookedRows),
         'skips' => $skipRows,
     ];
 
@@ -317,4 +355,62 @@ foreach ($groups as $group) {
 
 if ($dryRun) {
     $log('dry-run: berhenti setelah preview, state tidak diubah');
+}
+
+/* --- Email laporan ------------------------------------------------------- */
+if ($runGroups === []) {
+    $log('tidak ada hasil untuk dilaporkan');
+    exit(0);
+}
+
+$allSkips = [];
+$bookedCount = 0;
+foreach ($runGroups as $groupResult) {
+    $bookedCount += count($groupResult['booked']);
+    foreach ($groupResult['skips'] as $skip) $allSkips[] = $skip;
+}
+$skipSignature = va_skip_signature($allSkips);
+
+if ($noEmail) {
+    $log('email dilewati (--no-email)');
+    exit(0);
+}
+if ($recipients === []) {
+    $log('email dilewati: recipients kosong di va_daily.config.php');
+    exit(0);
+}
+
+$sameSkips = ($state['lastSkipSignature'] ?? null) === $skipSignature && ($state['lastSkipDate'] ?? null) === $today;
+if ($bookedCount === 0 && $sameSkips) {
+    $log('email tidak dikirim: tidak ada booking baru dan skip identik dengan email terakhir hari ini');
+    echo "Tidak ada perubahan (skip identik), email tidak dikirim\n";
+    exit(0);
+}
+
+$report = va_build_report([
+    'date' => $today,
+    'dryRun' => $dryRun,
+    'groups' => $runGroups,
+    'fatal' => null,
+]);
+$results = va_send_report($report, $recipients);
+$sent = false;
+foreach ($results as $to => $result) {
+    if (!empty($result['ok'])) {
+        $sent = true;
+        $log("email terkirim ke $to: " . $report['subject']);
+    } else {
+        $log("EMAIL GAGAL ke $to: " . ($result['error'] ?? 'unknown'));
+        fwrite(STDERR, "Email gagal ke $to\n");
+    }
+}
+
+if ($sent && !$dryRun) {
+    $state['lastSkipSignature'] = $skipSignature;
+    $state['lastSkipDate'] = $today;
+    $state['lastRun'] = date('c');
+    va_state_write($statePath, $state);
+}
+if ($sent) {
+    echo "Email terkirim: {$report['subject']}\n";
 }

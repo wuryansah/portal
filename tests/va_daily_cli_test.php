@@ -65,6 +65,8 @@ $state = va_state_read($statePath);
 cek('file tidak ditandai selesai tanpa periode', isset($state['files']['Mall 21 Oktober 2026.txt']), false);
 cek('arsip skip ditulis', glob($work . '/skips/*.csv') ? true : false, true);
 cek('tidak ada error di stderr', trim($err2), '');
+cek('--no-email tidak mengirim email', strpos($out2, 'Email terkirim') === false, true);
+cek('--no-email tidak mencatat dedupe email', va_state_read($statePath)['lastSkipSignature'], null);
 
 /* state atomik bolak-balik */
 va_state_write($statePath, ['files' => ['a.txt' => ['mtime' => 1, 'size' => 2]], 'lastSkipSignature' => null, 'lastSkipDate' => null, 'lastRun' => null]);
