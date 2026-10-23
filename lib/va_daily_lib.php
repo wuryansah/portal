@@ -208,13 +208,186 @@ function va_money(float $amount): string {
 }
 
 /**
- * Saring file bank menjadi kelompok (folder, bulan, tahun) yang siap dipreview.
- *
- * @param array<int,array{path:string,name:string,folder:string,mtime:int,size:int}> $files
- * @param array $state  hasil va_state_read(); hanya kunci 'files' yang dipakai
- * @param int $sinceTs  file dengan mtime lebih tua dari ini diabaikan
- * @return array{groups:array,skippedOld:int}
+ * Argumen untuk `import_va_record.php`. `--yes` selalu dipakai: booking otomatis,
+ * tanpa prompt interaktif (keputusan user).
  */
+function va_build_record_command(string $php, string $xlsPath, string $period, array $files, int $auditUserId): array {
+    $cmd = [
+        $php,
+        dirname(__DIR__) . DIRECTORY_SEPARATOR . 'import_va_record.php',
+        '--xls', $xlsPath,
+        '--period', $period,
+        '--user', (string) $auditUserId,
+        '--yes',
+    ];
+    if ($files !== []) {
+        $cmd[] = '--files';
+        $cmd[] = implode(',', $files);
+    }
+    return $cmd;
+}
+
+function va_period_key(string $period): string {
+    return strtolower((string) preg_replace('/[^a-z0-9]/i', '', $period));
+}
+
+/**
+ * Baca stdout `import_va_record.php`.
+ *
+ * @return array{booked:int,skipped:int,reasons:array<string,int>,perFile:array<string,int>}
+ */
+function va_parse_record_output(string $stdout): array {
+    $out = ['booked' => 0, 'skipped' => 0, 'reasons' => [], 'perFile' => []];
+
+    if (preg_match_all('/^Payments booked\s*:\s*(\d+)\s*$/m', $stdout, $m)) {
+        $out['booked'] = (int) end($m[1]);
+    }
+    if (preg_match_all('/^Skipped\s*:\s*(\d+)/m', $stdout, $m)) {
+        $out['skipped'] = (int) end($m[1]);
+    }
+    if (preg_match_all('/^\s{2}-\s+([a-z ]+?)\s*:\s*(\d+)\s*$/mi', $stdout, $m, PREG_SET_ORDER)) {
+        foreach ($m as $row) {
+            $out['reasons'][strtolower(trim($row[1]))] = (int) $row[2];
+        }
+    }
+    if (preg_match_all('/^(\d+) VA payments to .*? from (.+?)\s*$/m', $stdout, $m, PREG_SET_ORDER)) {
+        foreach ($m as $row) {
+            $out['perFile'][trim($row[2])] = (int) $row[1];
+        }
+    }
+    return $out;
+}
+
+/**
+ * Baris transaksi dari sheet "All Transactions" pada XLS preview.
+ * Semua nilai dikembalikan sebagai string kecuali amount (float).
+ */
+function va_read_preview_rows(string $xlsPath): array {
+    if (!is_file($xlsPath)) return [];
+    $autoload = dirname(__DIR__) . '/vendor/autoload.php';
+    if (is_file($autoload)) require_once $autoload;
+
+    $book = \PhpOffice\PhpSpreadsheet\IOFactory::load($xlsPath);
+    $sheet = $book->getSheetByName('All Transactions');
+    if ($sheet === null) {
+        $book->disconnectWorksheets();
+        return [];
+    }
+
+    $headers = [];
+    foreach ($sheet->getRowIterator(1, 1) as $row) {
+        foreach ($row->getCellIterator() as $cell) {
+            $headers[trim((string) $cell->getValue())] = $cell->getColumn();
+        }
+    }
+    $rows = [];
+    $highest = (int) $sheet->getHighestDataRow();
+    for ($r = 2; $r <= $highest; $r++) {
+        $get = static fn(string $name): string => isset($headers[$name])
+            ? trim((string) $sheet->getCell($headers[$name] . $r)->getValue())
+            : '';
+        $rows[] = [
+            'source_file' => $get('Source File'),
+            'va_number' => $get('VA Number'),
+            'va_name' => $get('VA Name'),
+            'unit_number' => $get('Unit Number'),
+            'amount' => va_amount_value($get('Amount')),
+            'txn_date' => $get('Txn Date'),
+            'txn_time' => $get('Time'),
+            'matched' => $get('Matched'),
+        ];
+    }
+    $book->disconnectWorksheets();
+    return $rows;
+}
+
+/**
+ * Baca CSV review skip (format `import_va_record.php`).
+ */
+function va_read_skip_csv(string $path): array {
+    if (!is_file($path)) return [];
+    $fp = @fopen($path, 'r');
+    if ($fp === false) return [];
+    $header = fgetcsv($fp);
+    if ($header === false) {
+        fclose($fp);
+        return [];
+    }
+    $map = [];
+    foreach ($header as $i => $name) $map[strtolower(trim((string) $name))] = $i;
+    $rows = [];
+    while (($line = fgetcsv($fp)) !== false) {
+        if ($line === [null] || $line === false) continue;
+        $pick = static fn(string $name): string => isset($map[$name], $line[$map[$name]])
+            ? trim((string) $line[$map[$name]])
+            : '';
+        $rows[] = [
+            'source_file' => $pick('source file'),
+            'va_number' => $pick('va number'),
+            'va_name' => $pick('va name'),
+            'unit_number' => $pick('unit number'),
+            'amount' => $pick('amount'),
+            'txn_date' => $pick('txn date'),
+            'txn_time' => $pick('time'),
+            'reason' => $pick('reason'),
+        ];
+    }
+    fclose($fp);
+    return $rows;
+}
+
+/**
+ * Tulis CSV review skip dengan format yang sama seperti `import_va_record.php`.
+ */
+function va_write_skip_csv(string $path, array $rows): void {
+    $dir = dirname($path);
+    if (!is_dir($dir)) @mkdir($dir, 0777, true);
+    $fp = @fopen($path, 'w');
+    if ($fp === false) return;
+    fputcsv($fp, ['Row', 'Source File', 'VA Number', 'VA Name', 'Unit Number', 'Amount', 'Txn Date', 'Time', 'Reason']);
+    $i = 1;
+    foreach ($rows as $row) {
+        fputcsv($fp, [
+            $i++,
+            (string) ($row['source_file'] ?? ''),
+            (string) ($row['va_number'] ?? ''),
+            (string) ($row['va_name'] ?? ''),
+            (string) ($row['unit_number'] ?? ''),
+            number_format(va_amount_value($row['amount'] ?? 0), 2, ',', '.'),
+            (string) ($row['txn_date'] ?? ''),
+            (string) ($row['txn_time'] ?? ''),
+            (string) ($row['reason'] ?? ''),
+        ]);
+    }
+    fclose($fp);
+}
+
+function va_state_read(string $path): array {
+    $default = ['files' => [], 'lastSkipSignature' => null, 'lastSkipDate' => null, 'lastRun' => null];
+    if (!is_file($path)) return $default;
+    $data = json_decode((string) @file_get_contents($path), true);
+    if (!is_array($data)) return $default;
+    $state = array_merge($default, $data);
+    if (!is_array($state['files'])) $state['files'] = [];
+    return $state;
+}
+
+/**
+ * Tulis state secara atomik: temp file di folder yang sama lalu rename.
+ */
+function va_state_write(string $path, array $state): void {
+    $dir = dirname($path);
+    if (!is_dir($dir)) @mkdir($dir, 0777, true);
+    $json = json_encode($state, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if ($json === false) return;
+    $tmp = $path . '.tmp';
+    if (@file_put_contents($tmp, $json . "\n") === false) return;
+    if (!@rename($tmp, $path)) {
+        @unlink($path);
+        @rename($tmp, $path);
+    }
+}
+
 function va_collect_candidates(array $files, array $state, int $sinceTs): array {
     $known = (array) ($state['files'] ?? []);
     $groups = [];
@@ -277,4 +450,6 @@ function va_build_preview_command(string $php, string $xlsPath, string $baseDir,
     }
     return $cmd;
 }
+
+
 

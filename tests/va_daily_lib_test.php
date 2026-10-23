@@ -57,5 +57,43 @@ cek('nominal CSV berkoma setara float',
     va_row_key($preview[0]));
 cek('diff mengenali skip berformat CSV', count(va_diff_rows($preview, [$csvSkip])), 1);
 
+/* --- Task 3: booking state ------------------------------------------------ */
+$recordOut = <<<TXT
+
+=== ANALYSIS (Oct-26) ===
+Queued for booking : 2 payments
+Skipped            : 1
+  - no billing : 1
+
+=== DONE ===
+Payments booked : 2
+Skipped         : 1 (no billing: 1)
+2 VA payments to Oct-26 from Mall 21 Oktober 2026.txt
+0 VA payments to Oct-26 from Ruko 21 Oktober 2026.txt
+Skipped items saved for review: C:\\laragon\\www\\portal\\va_skip_review_oct26.csv
+TXT;
+$parsed = va_parse_record_output($recordOut);
+cek('parse booked', $parsed['booked'], 2);
+cek('parse skipped', $parsed['skipped'], 1);
+cek('parse alasan skip', $parsed['reasons'], ['no billing' => 1]);
+cek('parse per file', $parsed['perFile'], ['Mall 21 Oktober 2026.txt' => 2, 'Ruko 21 Oktober 2026.txt' => 0]);
+cek('parse nothing to do', va_parse_record_output("Nothing to do.\n")['booked'], 0);
+cek('kunci periode', va_period_key('Sep 2026'), 'sep2026');
+$recordCmd = va_build_record_command('php', 'x.xls', 'Oct-26', ['Mall 21 Oktober 2026.txt'], 3);
+cek('record --yes selalu dipakai', in_array('--yes', $recordCmd, true), true);
+cek('record memakai periode', $recordCmd[array_search('--period', $recordCmd, true) + 1], 'Oct-26');
+
+$skipCsvPath = sys_get_temp_dir() . '/va_skip_test_' . getmypid() . '.csv';
+va_write_skip_csv($skipCsvPath, [[
+    'source_file' => 'Mall 21 Oktober 2026.txt', 'va_number' => '8030001000135', 'va_name' => 'GF0C143',
+    'unit_number' => 'GF-0C143', 'amount' => 1000.0, 'txn_date' => '21/10/26', 'txn_time' => '09:00:00',
+    'reason' => 'no billing',
+]]);
+$back = va_read_skip_csv($skipCsvPath);
+cek('csv skip roundtrip jumlah', count($back), 1);
+cek('csv skip roundtrip alasan', $back[0]['reason'] ?? null, 'no billing');
+cek('csv skip roundtrip nominal', va_amount_value($back[0]['amount'] ?? '0'), 1000.0);
+@unlink($skipCsvPath);
+
 echo $gagal === 0 ? "OK $total test\n" : "GAGAL $gagal dari $total test\n";
 exit($gagal === 0 ? 0 : 1);

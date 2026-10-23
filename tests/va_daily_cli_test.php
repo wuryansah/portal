@@ -48,5 +48,27 @@ cek('bulan diambil dari nama file', [$c['groups'][0]['month'], $c['groups'][0]['
 /* report tanpa transaksi tidak membuat email "0 dibukukan" */
 cek('deteksi file kosong', strpos($out, '0 baris'), false);
 
+/* --- Task 3: booking + state --------------------------------------------- */
+$statePath = $work . '/state.json';
+
+/* periode palsu -> semua baris skip "no billing", tidak ada booking, file tidak ditandai selesai */
+$cmd2 = [$php, $root . '/va_daily.php', '--base-dir', $fixture, '--work-dir', $work,
+         '--no-email', '--since-days', '30', '--period', '__test_period__'];
+$proc = proc_open($cmd2, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+$out2 = stream_get_contents($pipes[1]);
+$err2 = stream_get_contents($pipes[2]);
+proc_close($proc);
+cek('periode tanpa billing tidak membukukan', strpos($out2, 'DIBUKUKAN') === false, true);
+cek('periode tanpa billing melaporkan skip', strpos($out2, 'TANPA PERIODE') !== false, true);
+cek('booked 0 dilaporkan sebagai skip', strpos($out2, '3 baris') !== false, true);
+$state = va_state_read($statePath);
+cek('file tidak ditandai selesai tanpa periode', isset($state['files']['Mall 21 Oktober 2026.txt']), false);
+cek('arsip skip ditulis', glob($work . '/skips/*.csv') ? true : false, true);
+cek('tidak ada error di stderr', trim($err2), '');
+
+/* state atomik bolak-balik */
+va_state_write($statePath, ['files' => ['a.txt' => ['mtime' => 1, 'size' => 2]], 'lastSkipSignature' => null, 'lastSkipDate' => null, 'lastRun' => null]);
+cek('state bisa dibaca kembali', va_state_read($statePath)['files']['a.txt']['size'], 2);
+
 echo $gagal === 0 ? "OK $total test\n" : "GAGAL $gagal dari $total test\n";
 exit($gagal === 0 ? 0 : 1);

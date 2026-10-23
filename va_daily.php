@@ -112,11 +112,9 @@ foreach ($db->query("SELECT billing_period, COUNT(*) AS n FROM billing GROUP BY 
 }
 
 $statePath = $workDir . '/state.json';
-$state = [];
-if (is_file($statePath)) {
-    $decoded = json_decode((string) @file_get_contents($statePath), true);
-    if (is_array($decoded)) $state = $decoded;
-}
+$state = va_state_read($statePath);
+$auditUserId = (int) $config['audit_user_id'];
+$runGroups = [];
 
 /* Pindai folder induk + subfolder bulan berjalan dan bulan sebelumnya. */
 $nowYm = ['year' => (int) date('Y'), 'month' => (int) date('n')];
@@ -207,6 +205,114 @@ foreach ($groups as $group) {
     }
     $log("preview $label: $rows baris, $fileCount file, xls=$xlsPath");
     echo "PREVIEW $label: $rows baris ($fileCount file)\n";
+
+    if ($dryRun) {
+        $log("dry-run: preview saja untuk $label");
+        continue;
+    }
+    if ($period === null) {
+        continue; // sudah dilaporkan sebagai TANPA PERIODE di atas
+    }
+
+    $allPreview = va_read_preview_rows($xlsPath);
+
+    /* Periode belum ada di tabel billing: jangan sentuh DB, jangan tandai selesai.
+       Tetap hasilkan CSV review supaya admin melihat baris yang menunggu. */
+    if (empty($periodCounts[$period])) {
+        echo "TANPA PERIODE $label ($period tidak ada di billing)\n";
+        $log("TANPA PERIODE $label: $period tidak ada di billing, " . count($allPreview) . ' baris menunggu');
+        $localSkips = [];
+        foreach ($allPreview as $row) {
+            $wouldBook = $row['matched'] === 'YES' && $row['unit_number'] !== '' && $row['unit_number'] !== '???';
+            $row['reason'] = $wouldBook ? 'no billing' : 'unmatched';
+            $localSkips[] = $row;
+        }
+        if ($localSkips !== []) {
+            $archive = sprintf('%s/%s_%s.csv', $dirs['skips'], date('Y-m-d_Hi'), va_period_key($period));
+            va_write_skip_csv($archive, $localSkips);
+            $log('arsip skip: ' . $archive);
+        }
+        $runGroups[] = [
+            'folder' => basename($group['folder']),
+            'period' => $period,
+            'periodRows' => 0,
+            'files' => $group['files'],
+            'booked' => [],
+            'skips' => $localSkips,
+        ];
+        continue;
+    }
+
+    $rootCsv = dirname(__DIR__) . '/va_skip_review_' . va_period_key($period) . '.csv';
+    @unlink($rootCsv); // jangan pernah membaca CSV basi dari run sebelumnya
+
+    $record = va_run(va_build_record_command(PHP_BINARY, $xlsPath, $period, $group['files'], $auditUserId));
+    $recordLines = array_filter(explode("\n", trim($record['stdout'])));
+    foreach (array_slice($recordLines, 0, 40) as $line) {
+        $log('  record> ' . $line);
+    }
+    if (count($recordLines) > 40) {
+        $log('  record> ... ' . (count($recordLines) - 40) . ' baris lainnya');
+    }
+    if ($record['code'] !== 0) {
+        $log('record GAGAL (exit ' . $record['code'] . '): ' . trim($record['stderr']));
+        echo "BOOKING GAGAL $label\n";
+        continue; // state tidak diubah, run berikutnya mencoba lagi
+    }
+    if (trim($record['stderr']) !== '') {
+        $log('  record stderr> ' . trim($record['stderr']));
+    }
+
+    $parsed = va_parse_record_output($record['stdout']);
+    $skipRows = va_read_skip_csv($rootCsv);
+    if ($skipRows !== []) {
+        $archive = sprintf('%s/%s_%s.csv', $dirs['skips'], date('Y-m-d_Hi'), va_period_key($period));
+        if (@copy($rootCsv, $archive)) {
+            $log('arsip skip: ' . $archive);
+        } else {
+            $log('GAGAL menyalin arsip skip: ' . $rootCsv);
+        }
+    }
+
+    $previewRows = array_values(array_filter($allPreview, static fn(array $r): bool => $r['matched'] === 'YES'));
+    $bookedRows = va_diff_rows($previewRows, $skipRows);
+    $bookedTotal = 0.0;
+    foreach ($bookedRows as $row) {
+        $bookedTotal += va_amount_value($row['amount']);
+    }
+    if (count($bookedRows) !== $parsed['booked']) {
+        $log('peringatan: diff booked (' . count($bookedRows) . ') != laporan record (' . $parsed['booked'] . ')');
+    }
+    if ($bookedRows !== []) {
+        echo 'DIBUKUKAN ' . count($bookedRows) . ' baris (' . va_money($bookedTotal) . ")\n";
+        $log("dibukukan $label: " . count($bookedRows) . ' baris ' . va_money($bookedTotal));
+    } else {
+        $log("tidak ada baris baru dibukukan untuk $label (semua dedup/skip)");
+    }
+
+    $runGroups[] = [
+        'folder' => basename($group['folder']),
+        'period' => $period,
+        'periodRows' => (int) $periodCounts[$period],
+        'files' => $group['files'],
+        'booked' => $bookedRows,
+        'skips' => $skipRows,
+    ];
+
+    /* Tandai file selesai hanya setelah record sukses dan periode benar-benar ada. */
+    $sources = [];
+    foreach ($files as $file) $sources[$file['name']] = $file;
+    foreach ($group['files'] as $name) {
+        $state['files'][$name] = [
+            'mtime' => (int) ($sources[$name]['mtime'] ?? 0),
+            'size' => (int) ($sources[$name]['size'] ?? 0),
+            'period' => $period,
+            'booked' => (int) ($parsed['perFile'][$name] ?? 0),
+            'at' => date('c'),
+        ];
+    }
+    $state['lastRun'] = date('c');
+    va_state_write($statePath, $state);
 }
 
 if ($dryRun) {
