@@ -115,6 +115,7 @@ Edit `va_daily.config.php`:
 | `MySQL tidak bisa dihubungi` | Laragon/MySQL belum jalan. Nyalakan MySQL, jalankan ulang. |
 | `TANPA PERIODE ... (tidak ada di billing)` | `billing_period` untuk bulan itu belum dibuat. Buat billing massal periode tsb, lalu jalankan ulang; baris akan diproses (tidak ada booking yang hilang). |
 | `BOOKING GAGAL ...` | Lihat `record>` di log. File tidak ditandai selesai sehingga dicoba lagi pada run berikutnya. |
+| `BOOKING TIDAK DILAPORKAN ...` | `import_va_record.php` mengaku ada skip tetapi `va_skip_review_<period>.csv` tidak ada/kosong (mis. root repo tidak bisa ditulis). File tidak ditandai selesai; perbaiki izin tulis lalu jalankan ulang. Script menolak mengklaim "dibukukan" tanpa data skip. |
 | Email tidak masuk | Cek `EMAIL GAGAL` di log; SMTP diatur di `.env` (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_ENC`, `MAIL_FROM`). Kirim ulang manual dengan `php va_daily.php --since-days 1` setelah memperbaiki SMTP (state sudah selesai, jadi pakai `--since-days` + reset entri state bila perlu). |
 | Email tidak dikirim padahal ada file | Normal bila tidak ada booking baru dan skip identik dengan email terakhir hari itu. Bukti ada di log: `email tidak dikirim: ...`. |
 | Banyak skip `duplicate` | Normal untuk file yang sudah pernah dibukukan (mis. setelah backfill). Cek hanya bila ada nominal/tanggal yang janggal. |
