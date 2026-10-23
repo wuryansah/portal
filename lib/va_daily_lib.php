@@ -232,6 +232,28 @@ function va_period_key(string $period): string {
 }
 
 /**
+ * Lokasi CSV review skip. `import_va_record.php` menulisnya di root repo
+ * (`__DIR__ . "/va_skip_review_<$periodKey>.csv"`), jadi path ini harus
+ * dihitung dari folder lib (satu level di bawah root), bukan dari pemanggil.
+ */
+function va_skip_csv_path(string $period): string {
+    return dirname(__DIR__) . '/va_skip_review_' . va_period_key($period) . '.csv';
+}
+
+/**
+ * Penjaga anti "skip hilang diam-diam": bila record mengaku ada skip tetapi CSV
+ * review tidak ada/kosong, laporan tidak boleh diklaim sukses.
+ *
+ * @return string|null pesan kesalahan, atau null bila aman
+ */
+function va_skip_capture_error(int $reportedSkipped, array $skipRows): ?string {
+    if ($reportedSkipped > 0 && $skipRows === []) {
+        return "record melaporkan $reportedSkipped skip tetapi CSV review tidak ditemukan/kosong";
+    }
+    return null;
+}
+
+/**
  * Baca stdout `import_va_record.php`.
  *
  * @return array{booked:int,skipped:int,reasons:array<string,int>,perFile:array<string,int>}

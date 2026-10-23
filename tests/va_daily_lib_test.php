@@ -95,5 +95,15 @@ cek('csv skip roundtrip alasan', $back[0]['reason'] ?? null, 'no billing');
 cek('csv skip roundtrip nominal', va_amount_value($back[0]['amount'] ?? '0'), 1000.0);
 @unlink($skipCsvPath);
 
+/* Lokasi CSV review HARUS di root repo (tempat import_va_record.php menulisnya). */
+cek('path CSV skip ada di root repo',
+    str_replace('\\', '/', va_skip_csv_path('Oct-26')),
+    str_replace('\\', '/', dirname(__DIR__)) . '/va_skip_review_oct26.csv');
+
+/* Penjaga: laporkan kegagalan bila record mengaku skip tapi CSV tidak ada. */
+cek('penjaga skip tanpa csv', is_string(va_skip_capture_error(5, [])), true);
+cek('penjaga skip tidak rewel saat tidak ada skip', va_skip_capture_error(0, []), null);
+cek('penjaga skip aman saat csv ada', va_skip_capture_error(1, [['va_number' => '1']]), null);
+
 echo $gagal === 0 ? "OK $total test\n" : "GAGAL $gagal dari $total test\n";
 exit($gagal === 0 ? 0 : 1);

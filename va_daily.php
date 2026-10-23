@@ -275,7 +275,7 @@ foreach ($groups as $group) {
         continue;
     }
 
-    $rootCsv = dirname(__DIR__) . '/va_skip_review_' . va_period_key($period) . '.csv';
+    $rootCsv = va_skip_csv_path($period);
     @unlink($rootCsv); // jangan pernah membaca CSV basi dari run sebelumnya
 
     $record = va_run(va_build_record_command(PHP_BINARY, $xlsPath, $period, $group['files'], $auditUserId));
@@ -297,6 +297,13 @@ foreach ($groups as $group) {
 
     $parsed = va_parse_record_output($record['stdout']);
     $skipRows = va_read_skip_csv($rootCsv);
+    $captureError = va_skip_capture_error((int) $parsed['skipped'], $skipRows);
+    if ($captureError !== null) {
+        /* Jangan pernah mengklaim sukses bila skip tidak bisa dilaporkan. */
+        $sendFatal("[$label] $captureError ($rootCsv)");
+        echo "BOOKING TIDAK DILAPORKAN $label — $captureError\n";
+        continue; // state tidak diubah, run berikutnya melaporkan ulang
+    }
     if ($skipRows !== []) {
         $archive = sprintf('%s/%s_%s.csv', $dirs['skips'], date('Y-m-d_Hi'), va_period_key($period));
         if (@copy($rootCsv, $archive)) {
