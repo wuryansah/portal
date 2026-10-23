@@ -206,3 +206,75 @@ function va_skip_signature(array $skipRows): string {
 function va_money(float $amount): string {
     return 'Rp' . number_format($amount, 0, ',', '.');
 }
+
+/**
+ * Saring file bank menjadi kelompok (folder, bulan, tahun) yang siap dipreview.
+ *
+ * @param array<int,array{path:string,name:string,folder:string,mtime:int,size:int}> $files
+ * @param array $state  hasil va_state_read(); hanya kunci 'files' yang dipakai
+ * @param int $sinceTs  file dengan mtime lebih tua dari ini diabaikan
+ * @return array{groups:array,skippedOld:int}
+ */
+function va_collect_candidates(array $files, array $state, int $sinceTs): array {
+    $known = (array) ($state['files'] ?? []);
+    $groups = [];
+    $skippedOld = 0;
+    foreach ($files as $file) {
+        $name = (string) ($file['name'] ?? '');
+        $parsed = va_parse_report_filename($name);
+        if ($parsed === null) continue;
+        $mtime = (int) ($file['mtime'] ?? 0);
+        if ($mtime < $sinceTs) {
+            $skippedOld++;
+            continue;
+        }
+        $sig = ['mtime' => $mtime, 'size' => (int) ($file['size'] ?? 0)];
+        if (!va_needs_processing($known[$name] ?? null, $sig)) continue;
+
+        $key = (string) ($file['folder'] ?? '') . '|' . $parsed['month'] . '|' . $parsed['year'];
+        if (!isset($groups[$key])) {
+            $groups[$key] = [
+                'folder' => (string) ($file['folder'] ?? ''),
+                'month' => $parsed['month'],
+                'year' => $parsed['year'],
+                'days' => [],
+                'files' => [],
+            ];
+        }
+        $groups[$key]['days'][] = $parsed['day'];
+        $groups[$key]['files'][] = $name;
+    }
+
+    $out = [];
+    foreach ($groups as $group) {
+        $group['days'] = array_values(array_unique($group['days']));
+        sort($group['days']);
+        $group['files'] = array_values(array_unique($group['files']));
+        sort($group['files']);
+        $out[] = $group;
+    }
+    usort($out, static fn(array $a, array $b): int => [$a['year'], $a['month'], $a['folder']] <=> [$b['year'], $b['month'], $b['folder']]);
+    return ['groups' => $out, 'skippedOld' => $skippedOld];
+}
+
+/**
+ * Argumen untuk `import_va_preview.php` (base dir selalu diakhiri separator).
+ */
+function va_build_preview_command(string $php, string $xlsPath, string $baseDir, int $month, int $year, array $days, string $period): array {
+    $names = va_month_names();
+    $cmd = [
+        $php,
+        dirname(__DIR__) . DIRECTORY_SEPARATOR . 'import_va_preview.php',
+        '--base-dir', rtrim($baseDir, "\\/") . DIRECTORY_SEPARATOR,
+        '--month', (string) ($names[$month] ?? ''),
+        '--year', (string) $year,
+        '--days', implode(',', $days),
+        '--out', $xlsPath,
+    ];
+    if ($period !== '') {
+        $cmd[] = '--period';
+        $cmd[] = $period;
+    }
+    return $cmd;
+}
+
