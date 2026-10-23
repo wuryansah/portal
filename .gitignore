@@ -22,6 +22,9 @@ uploads/
 /*.xlsx
 /*.csv
 
+# VA daily import runtime artifacts (preview XLS, skip CSV, logs, state).
+data/va_daily/
+
 # ---------------------------------------------------------------------------
 # TOOLING CACHES
 # .opencode/ self-ignores its own node_modules via .opencode/.gitignore
