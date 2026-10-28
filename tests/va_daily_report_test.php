@@ -58,5 +58,33 @@ $capped = va_build_report(['date' => '2026-10-23', 'dryRun' => false, 'fatal' =>
 cek('tabel dibatasi 200 baris', substr_count($capped['html'], 'VA-'), 200);
 cek('catatan baris tersisa', strpos($capped['html'], '50 baris lain') !== false, true);
 
+/* --- Watchdog alert report ------------------------------------------------ */
+$r = va_watchdog_build_report([
+    'date' => '2026-10-28',
+    'slots' => [['time' => '09:30']],
+    'files' => [['name' => 'Mall 26 Oktober 2026.txt', 'mtime' => time()]],
+    'catchup' => ['ran' => false, 'ok' => false, 'summary' => ''],
+    'error' => null,
+]);
+cek('subject peringatan', strpos($r['subject'], 'PERINGATAN 28-10-2026') !== false, true);
+cek('subject menyebut run', strpos($r['subject'], '09:30') !== false, true);
+cek('html menyebut file', strpos($r['html'], 'Mall 26 Oktober 2026.txt') !== false, true);
+cek('teks telegram menyebut file', strpos($r['text'], 'Mall 26 Oktober 2026.txt') !== false, true);
+
+$ok = va_watchdog_build_report([
+    'date' => '2026-10-28', 'slots' => [], 'files' => [],
+    'catchup' => ['ran' => true, 'ok' => true, 'summary' => '38 dibukukan (Rp102.798.838), 0 skip'],
+    'error' => null,
+]);
+cek('subject catch-up sukses', strpos($ok['subject'], 'catch-up') !== false, true);
+cek('teks catch-up berisi hasil', strpos($ok['text'], '38 dibukukan') !== false, true);
+
+$fail = va_watchdog_build_report([
+    'date' => '2026-10-28', 'slots' => [], 'files' => [],
+    'catchup' => ['ran' => true, 'ok' => false, 'summary' => ''],
+    'error' => 'preview gagal',
+]);
+cek('subject gagal watchdog', strpos($fail['subject'], 'GAGAL WATCHDOG') !== false, true);
+
 echo $gagal === 0 ? "OK $total test\n" : "GAGAL $gagal dari $total test\n";
 exit($gagal === 0 ? 0 : 1);

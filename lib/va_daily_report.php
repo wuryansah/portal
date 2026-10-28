@@ -180,6 +180,117 @@ function va_build_report(array $run): array {
 }
 
 /**
+ * Pesan watchdog: alert masalah, hasil catch-up, atau kegagalan watchdog.
+ *
+ * @param array $data ['date','slots'=>[['time']],'files'=>[['name','mtime']],
+ *                    'catchup'=>['ran','ok','summary'],'error'=>?string]
+ * @return array{subject:string,html:string,text:string}
+ */
+function va_watchdog_build_report(array $data): array {
+    $e = static fn($v): string => htmlspecialchars((string) $v, ENT_QUOTES, 'UTF-8');
+    $date = (string) ($data['date'] ?? date('Y-m-d'));
+    $ts = strtotime($date) ?: time();
+    $dmy = date('d-m-Y', $ts);
+    $slots = array_values((array) ($data['slots'] ?? []));
+    $files = array_values((array) ($data['files'] ?? []));
+    $catchup = (array) ($data['catchup'] ?? []);
+    $error = $data['error'] ?? null;
+    $ran = !empty($catchup['ran']);
+    $catchupOk = !empty($catchup['ok']);
+    $summary = trim((string) ($catchup['summary'] ?? ''));
+    $slotTimes = [];
+    foreach ($slots as $slot) $slotTimes[] = (string) (is_array($slot) ? ($slot['time'] ?? '') : $slot);
+    $fileNames = [];
+    foreach ($files as $file) $fileNames[] = (string) (is_array($file) ? ($file['name'] ?? '') : $file);
+
+    if ($error !== null) {
+        $subject = '[VA Harian] GAGAL WATCHDOG ' . $dmy . ' — ' . substr(preg_replace('/\s+/', ' ', (string) $error), 0, 120);
+    } elseif ($ran && $catchupOk && $slots === [] && $files === []) {
+        $subject = '[VA Harian] ' . $dmy . ' — catch-up: ' . ($summary !== '' ? substr($summary, 0, 120) : 'selesai');
+    } else {
+        $slotLabel = $slotTimes !== []
+            ? ' (' . implode(', ', array_slice($slotTimes, 0, 4)) . (count($slotTimes) > 4 ? ', …' : '') . ')'
+            : '';
+        $subject = '[VA Harian] PERINGATAN ' . $dmy . ' — ' . count($slots) . ' run belum selesai'
+            . $slotLabel . ', ' . count($files) . ' file menunggu';
+    }
+    if ($error === null && $ran && !$catchupOk) {
+        $subject = '[VA Harian] GAGAL WATCHDOG ' . $dmy . ' — catch-up gagal'
+            . ($summary !== '' ? ': ' . substr($summary, 0, 100) : '');
+    }
+
+    $html = '<!doctype html><html><head><meta charset="utf-8">' . va_report_styles() . '</head><body>';
+    $html .= '<h2>' . $e($subject) . '</h2>';
+    $html .= '<p class="muted">Dibuat otomatis oleh <code>va_daily_watchdog.php</code> pada '
+        . $e(date('d-m-Y H:i:s')) . '.</p>';
+
+    if ($error !== null) {
+        $html .= '<div class="fail"><strong>Watchdog gagal.</strong><br>' . $e((string) $error) . '</div>';
+    }
+    if ($ran) {
+        if ($catchupOk) {
+            $html .= '<div class="warn"><strong>Catch-up dijalankan.</strong> Import VA harian dijalankan ulang'
+                . ($summary !== '' ? ': ' . $e($summary) : '.') . '</div>';
+        } else {
+            $html .= '<div class="fail"><strong>Catch-up gagal.</strong> Import yang dijalankan ulang tidak selesai'
+                . ($summary !== '' ? ': ' . $e($summary) : '.') . '</div>';
+        }
+    }
+
+    if ($slotTimes !== []) {
+        $html .= '<h3>Run terjadwal belum selesai (' . count($slotTimes) . ')</h3>';
+        $html .= '<table><tr><th>Slot</th><th>Keterangan</th></tr>';
+        foreach ($slotTimes as $time) {
+            $html .= '<tr><td>' . $e($time) . '</td><td>tidak ada penanda <code>=== run selesai ===</code> yang sukses</td></tr>';
+        }
+        $html .= '</table>';
+    }
+
+    if ($fileNames !== []) {
+        $html .= '<h3>File menunggu diproses (' . count($fileNames) . ')</h3>';
+        $html .= '<table><tr><th>File</th><th>Waktu file</th></tr>';
+        foreach ($files as $file) {
+            $name = (string) (is_array($file) ? ($file['name'] ?? '') : $file);
+            $mtime = is_array($file) ? (int) ($file['mtime'] ?? 0) : 0;
+            $html .= '<tr><td>' . $e($name) . '</td>'
+                . '<td class="num">' . $e($mtime > 0 ? date('d-m-Y H:i', $mtime) : '-') . '</td></tr>';
+        }
+        $html .= '</table>';
+    }
+
+    if ($slotTimes === [] && $fileNames === [] && $error === null && !$ran) {
+        $html .= '<p class="muted">Tidak ada masalah.</p>';
+    }
+
+    $html .= '<p class="muted">Jalankan manual: <code>php va_daily.php</code>. Periksa log di '
+        . '<code>data/va_daily/logs/</code>.</p>';
+    $html .= '</body></html>';
+
+    $esc = static fn(string $v): string => str_replace(['&', '<', '>'], ['&amp;', '&lt;', '&gt;'], $v);
+    $text = $esc($subject) . "\nTanggal: $dmy";
+    if ($slotTimes !== []) {
+        $text .= "\nRun belum selesai: " . $esc(implode(', ', $slotTimes));
+    }
+    if ($fileNames !== []) {
+        $shown = array_slice($fileNames, 0, 20);
+        $text .= "\nFile menunggu (" . count($fileNames) . '): ' . $esc(implode(', ', $shown));
+        if (count($fileNames) > 20) $text .= ' …';
+    }
+    if ($ran) {
+        $text .= "\nCatch-up: " . ($catchupOk ? 'berhasil' : 'GAGAL');
+        if ($summary !== '') $text .= ' — ' . $esc($summary);
+    }
+    if ($error !== null) {
+        $text .= "\nError: " . $esc((string) $error);
+    }
+    if (!$ran && $slotTimes === [] && $fileNames === [] && $error === null) {
+        $text .= "\nTidak ada masalah.";
+    }
+
+    return ['subject' => $subject, 'html' => $html, 'text' => $text];
+}
+
+/**
  * Kirim laporan ke semua penerima; coba sekali lagi bila gagal.
  *
  * @return array<string,array{ok:bool,error?:string}>
