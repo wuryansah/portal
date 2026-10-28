@@ -16,6 +16,18 @@ return [
     // File bank lebih tua dari ini tidak diproses (dirilis manual bila perlu).
     'lookback_days' => 10,
 
+    // Jadwal run utama (Senin-Sabtu). Dipakai watchdog untuk menilai run yang belum selesai.
+    'schedule_times' => ['09:30', '13:00', '17:00'],
+
+    // Menit setelah jadwal sebelum slot dianggap terlambat.
+    'watchdog_grace_minutes' => 20,
+
+    // File di share yang lebih tua dari ini dan belum tercatat di state.json dianggap tertinggal.
+    'stale_file_hours' => 2,
+
+    // Watchdog menjalankan ulang import sekali saat masalah terdeteksi.
+    'auto_catch_up' => true,
+
     // State, preview, arsip skip, dan log. Diabaikan git.
     'work_dir' => __DIR__ . '/data/va_daily',
 ];
