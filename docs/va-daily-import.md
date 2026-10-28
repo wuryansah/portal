@@ -7,11 +7,13 @@ pembukuan otomatis ke billing, dan laporan email harian.
 
 | Item | Nilai |
 |---|---|
-| Script | `va_daily.php` (orchestrator), `lib/va_daily_lib.php`, `lib/va_daily_report.php` |
-| Konfigurasi | `va_daily.config.php` |
+| Script | `va_daily.php` (orchestrator), `va_daily_watchdog.php` (pengawas), `lib/va_daily_lib.php`, `lib/va_daily_report.php`, `lib/va_daily_watchdog_lib.php`, `lib/notifier.php` |
+| Konfigurasi | `va_daily.config.php`, `.env` (SMTP + Telegram) |
 | Sumber data | `\\10.10.21.222\pom\FINANCE - AR\AR & Collection\Virtual Account\Virtual Account 2026\Virtual TXT\<bulan>\*.txt` |
-| Jadwal | Senin–Sabtu, 09:30 / 13:00 / 17:00 (`M2S VA Daily Import`) |
+| Jadwal import | Senin-Sabtu, 09:30 / 13:00 / 17:00 (`M2S VA Daily Import`) |
+| Jadwal watchdog | Senin-Sabtu, 09:50 / 13:20 / 17:20 (`M2S VA Daily Watchdog`) |
 | Penerima laporan | `wuryansah@manggaduasquare.co.id` (ubah di `va_daily.config.php`) |
+| Kanal alert | Email (utama) + Telegram (opsional, dari `.env`) |
 | Artefak runtime | `data/va_daily/` (di-ignore git, berisi data keuangan) |
 | Booking | Otomatis, setara `import_va_record.php --yes` |
 
@@ -44,9 +46,13 @@ pembukuan otomatis ke billing, dan laporan email harian.
 ```
 data/va_daily/
 ├── state.json                              # progres per file + penanda dedupe email
+├── watchdog.json                           # dedupe alert watchdog (signature + tanggal)
+├── va_daily.lock                           # lock import (cegah dua run bersamaan)
+├── watchdog.lock                           # lock watchdog
 ├── preview/2026-10-23_0930_Oktober_ab12cd.xls
 ├── skips/2026-10-23_0930_oct26.csv         # arsip CSV review skip (juga di root repo)
-└── logs/2026-10-23.log                     # log teknis semua run hari itu
+├── logs/2026-10-23.log                     # log teknis semua run hari itu
+└── logs/watchdog-2026-10-23.log            # log keputusan watchdog
 ```
 
 `va_skip_review_<periodkey>.csv` di root repo adalah keluaran `import_va_record.php`.
@@ -70,6 +76,92 @@ php va_daily.php --work-dir "D:\tmp\va"          # artefak ke folder lain
 
 Minggu: script langsung keluar (`Bukan hari kerja`) tanpa memproses apa pun.
 
+### Penanda selesai & lock
+
+Setiap run `va_daily.php` menulis penanda `=== run selesai: <status> ===` ke log
+harian lewat shutdown handler. Status yang mungkin: `ok`, `done`, `no-new-files`,
+`no-results`, `dry-run`, `no-email`, `no-recipients`, `not-workday`, `fatal`.
+
+- Proses yang dibunuh paksa (`TerminateProcess`, mesin restart, task dihentikan)
+  **tidak** menulis penanda → watchdog menganggap slot itu belum selesai.
+- `va_daily.lock` mencegah dua import berjalan bersamaan (double booking). Bila
+  lock dipegang proses lain, run baru keluar dengan pesan `Run lain sedang berjalan`.
+
+## Watchdog (deteksi + catch-up otomatis)
+
+`va_daily_watchdog.php` berjalan 20 menit setelah setiap run utama
+(09:50 / 13:20 / 17:20, Senin-Sabtu). Ia **tidak** menggantikan laporan email
+normal; ia hanya bekerja saat ada masalah.
+
+1. Ambil `watchdog.lock`. Bila watchdog lain berjalan, keluar (`exit 0`).
+2. Hitung slot jadwal yang sudah lewat grace (`watchdog_grace_minutes`, default 20).
+3. Baca `logs/<tanggal>.log`: slot dianggap selesai hanya bila ada `=== run ===`
+   yang ditutup `=== run selesai: <status> ===` dengan status selain `fatal`.
+4. Pindai share (folder induk + bulan berjalan/sebelumnya) untuk file dalam
+   `lookback_days` yang belum tercatat di `state.json` dan umurnya >
+   `stale_file_hours` (default 2 jam).
+5. Bila ada masalah **dan** tidak ada import yang sedang berjalan (cek
+   `va_daily.lock`): jalankan `php va_daily.php --no-email` sekali (catch-up).
+   Email untuk catch-up dikirim oleh watchdog, bukan oleh proses anak.
+6. Periksa ulang log/state. Kirim notifikasi:
+   - catch-up berhasil → subjek `[VA Harian] <tgl> — catch-up: <hasil>`;
+   - masalah tersisa / catch-up gagal → subjek `[VA Harian] PERINGATAN ...` atau
+     `[VA Harian] GAGAL WATCHDOG ...`.
+7. Dedupe: masalah identik tidak dikirim ulang pada hari yang sama
+   (`watchdog.json` → `lastSignature`/`lastDate`).
+8. Exit code: `0` normal/tertangani, `1` masalah masih tersisa atau catch-up gagal.
+
+Hari normal (semua run selesai, tidak ada file tertinggal) tidak menghasilkan
+notifikasi apa pun.
+
+### Perintah watchdog
+
+```powershell
+php va_daily_watchdog.php                        # periksa + catch-up + notifikasi
+php va_daily_watchdog.php --dry-run --no-notify   # hanya periksa, tidak mengubah apa pun
+php va_daily_watchdog.php --no-catch-up          # periksa + lapor, tanpa menjalankan import
+php va_daily_watchdog.php --force                # abaikan dedupe (kirim ulang alert)
+php va_daily_watchdog.php --base-dir "D:\contoh" --work-dir "D:\tmp\va"
+php va_daily_watchdog.php --now "2026-10-28 10:00:00"   # uji dengan waktu tertentu
+php va_daily_watchdog.php --period "Oct-26"      # paksa periode saat catch-up
+```
+
+Log keputusan: `data\va_daily\logs\watchdog-<yyyy-mm-dd>.log`.
+
+### Konfigurasi watchdog
+
+`va_daily.config.php`:
+
+```php
+'schedule_times' => ['09:30', '13:00', '17:00'],
+'watchdog_grace_minutes' => 20,
+'stale_file_hours' => 2,
+'auto_catch_up' => true,
+```
+
+### Telegram (opsional, tambahan)
+
+Email tetap kanal utama. Telegram hanya dipakai bila token dan chat ID diisi.
+
+1. Buat bot lewat [@BotFather](https://t.me/BotFather) → `/newbot` → salin token.
+2. Kirim satu pesan ke bot, lalu buka
+   `https://api.telegram.org/bot<TOKEN>/getUpdates` → salin `chat.id`.
+3. Isi `.env` (jangan commit):
+
+   ```
+   TELEGRAM_BOT_TOKEN=<token>
+   TELEGRAM_CHAT_ID=<chat id>
+   ```
+
+4. Uji kirim:
+
+   ```powershell
+   php -r "require 'env.php'; require 'lib/notifier.php'; var_export(sendTelegram('Tes notifikasi VA Harian.'));"
+   ```
+
+Bila token salah / jaringan mati, email tetap terkirim dan watchdog hanya
+mencatat `TELEGRAM GAGAL` di log.
+
 ## Pemasangan / ubah jadwal
 
 ```powershell
@@ -84,10 +176,17 @@ Cek status & jalankan manual:
 
 ```powershell
 Get-ScheduledTask -TaskName 'M2S VA Daily Import' | Format-List
+Get-ScheduledTask -TaskName 'M2S VA Daily Watchdog' | Format-List
 (Get-ScheduledTask -TaskName 'M2S VA Daily Import').Triggers
+(Get-ScheduledTask -TaskName 'M2S VA Daily Watchdog').Triggers
 Start-ScheduledTask -TaskName 'M2S VA Daily Import'
+Start-ScheduledTask -TaskName 'M2S VA Daily Watchdog'
 Get-Content "data\va_daily\logs\$(Get-Date -Format yyyy-MM-dd).log" -Tail 30
+Get-Content "data\va_daily\logs\watchdog-$(Get-Date -Format yyyy-MM-dd).log" -Tail 30
 ```
+
+Ingin hanya task import (tanpa watchdog)? Jalankan dengan `-SkipWatchdog`.
+Ubah jam watchdog: `-WatchdogTimes '09:50','13:20','17:20'`.
 
 ## Mengubah penerima / lookback
 
@@ -119,6 +218,10 @@ Edit `va_daily.config.php`:
 | Email tidak masuk | Cek `EMAIL GAGAL` di log; SMTP diatur di `.env` (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_ENC`, `MAIL_FROM`). Kirim ulang manual dengan `php va_daily.php --since-days 1` setelah memperbaiki SMTP (state sudah selesai, jadi pakai `--since-days` + reset entri state bila perlu). |
 | Email tidak dikirim padahal ada file | Normal bila tidak ada booking baru dan skip identik dengan email terakhir hari itu. Bukti ada di log: `email tidak dikirim: ...`. |
 | Banyak skip `duplicate` | Normal untuk file yang sudah pernah dibukukan (mis. setelah backfill). Cek hanya bila ada nominal/tanggal yang janggal. |
+| Alert watchdog tidak masuk padahal ada masalah | Cek `logs/watchdog-<tgl>.log`: `notifikasi dilewati` (signature sama hari itu → pakai `--force`), `EMAIL GAGAL`, `TELEGRAM GAGAL`, atau `import sedang berjalan`. |
+| Watchdog terus melaporkan slot belum selesai | Log harian tidak punya `=== run selesai ===` untuk slot itu (proses mati). Jalankan `php va_daily.php`, atau biarkan catch-up bekerja. |
+| Catch-up gagal | Lihat `catch-up selesai: exit <kode>` + baris `preview>`/`record>` di log harian. Penyebab umum sama seperti tabel di atas (share/MySQL mati, periode belum ada). |
+| `Run lain sedang berjalan` | Lock `va_daily.lock` dipegang proses lain (run terjadwal masih jalan). Tunggu selesai; watchdog juga melewati catch-up dalam kondisi ini. |
 
 ## Kebijakan review skip
 
