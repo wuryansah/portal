@@ -30,6 +30,10 @@ cek('tidak ada booking saat dry-run', strpos($out, 'DIBUKUKAN') === false, true)
 cek('laporan menyebut 3 transaksi', strpos($out, '3 baris') !== false, true);
 cek('error kosong', trim($err), '');
 
+$logFile = glob($work . '/logs/*.log')[0] ?? '';
+$logText = $logFile !== '' ? (string) file_get_contents($logFile) : '';
+cek('dry-run menulis penanda selesai', strpos($logText, '=== run selesai: dry-run ===') !== false, true);
+
 /* kandidat: file minggu lalu diabaikan bila di luar lookback */
 $old = $work . '/old';
 @mkdir($old, 0777, true);
@@ -67,6 +71,20 @@ cek('arsip skip ditulis', glob($work . '/skips/*.csv') ? true : false, true);
 cek('tidak ada error di stderr', trim($err2), '');
 cek('--no-email tidak mengirim email', strpos($out2, 'Email terkirim') === false, true);
 cek('--no-email tidak mencatat dedupe email', va_state_read($statePath)['lastSkipSignature'], null);
+cek('run no-email menulis penanda selesai', strpos((string) file_get_contents($logFile), '=== run selesai: no-email ===') !== false, true);
+
+/* Lock: proses lain harus gagal mengambil lock yang sama. */
+$lockPath = $work . '/va_daily.lock';
+$lock = va_acquire_lock($lockPath);
+cek('lock pertama didapat', is_resource($lock), true);
+$lockProbe = [$php, '-r', 'require $argv[1]; var_export(va_acquire_lock($argv[2]) === false);',
+              $root . '/lib/va_daily_lib.php', $lockPath];
+$probe = proc_open($lockProbe, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pp);
+$probeOut = trim(stream_get_contents($pp[1]));
+$probeErr = trim(stream_get_contents($pp[2]));
+cek('proses kedua melihat lock sibuk', [$probeOut, $probeErr], ['true', '']);
+proc_close($probe);
+va_release_lock($lock);
 
 /* state atomik bolak-balik */
 va_state_write($statePath, ['files' => ['a.txt' => ['mtime' => 1, 'size' => 2]], 'lastSkipSignature' => null, 'lastSkipDate' => null, 'lastRun' => null]);

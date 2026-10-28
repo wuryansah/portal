@@ -27,26 +27,6 @@ function va_cli_flag(array $args, string $name): bool {
     return in_array('--' . $name, $args, true);
 }
 
-/**
- * Jalankan subprocess tanpa risiko deadlock: stdout/stderr ditampung di file.
- *
- * @return array{code:int,stdout:string,stderr:string}
- */
-function va_run(array $cmd): array {
-    $outFile = tempnam(sys_get_temp_dir(), 'vaout');
-    $errFile = tempnam(sys_get_temp_dir(), 'vaerr');
-    if ($outFile === false || $errFile === false) {
-        return ['code' => -1, 'stdout' => '', 'stderr' => 'gagal membuat file sementara'];
-    }
-    $proc = proc_open($cmd, [1 => ['file', $outFile, 'w'], 2 => ['file', $errFile, 'w']], $pipes);
-    $code = is_resource($proc) ? (int) proc_close($proc) : -1;
-    $stdout = (string) @file_get_contents($outFile);
-    $stderr = (string) @file_get_contents($errFile);
-    @unlink($outFile);
-    @unlink($errFile);
-    return ['code' => $code, 'stdout' => $stdout, 'stderr' => $stderr];
-}
-
 /** Jumlah baris transaksi di sheet "All Transactions" pada XLS preview. */
 function va_preview_row_count(string $xlsPath): int {
     $autoload = __DIR__ . '/vendor/autoload.php';
@@ -82,6 +62,22 @@ $logPath = $dirs['logs'] . '/' . date('Y-m-d') . '.log';
 $log = static function (string $message) use ($logPath): void {
     @file_put_contents($logPath, '[' . date('Y-m-d H:i:s') . '] ' . $message . "\n", FILE_APPEND);
 };
+
+/* Satu import pada satu waktu. Lock lepas otomatis saat proses selesai/mati. */
+$runStatus = 'ok';
+$runLock = va_acquire_lock($workDir . '/va_daily.lock');
+if ($runLock === false) {
+    $log('run lain sedang berjalan, keluar');
+    echo "Run lain sedang berjalan\n";
+    exit(0);
+}
+register_shutdown_function(static function () use (&$runStatus, $log): void {
+    $err = error_get_last();
+    if ($err !== null && in_array($err['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
+        $runStatus = 'fatal';
+    }
+    $log('=== run selesai: ' . $runStatus . ' ===');
+});
 
 $statePath = $workDir . '/state.json';
 $state = va_state_read($statePath);
@@ -123,12 +119,14 @@ $log('=== run ===' . ($dryRun ? ' (dry-run)' : '') . ($noEmail ? ' (no-email)' :
 
 if (!va_is_run_day((int) date('w'))) {
     $log('bukan hari kerja (Minggu), keluar tanpa memproses');
+    $runStatus = 'not-workday';
     echo "Bukan hari kerja\n";
     exit(0);
 }
 
 if (!is_dir($baseDir)) {
     $sendFatal("Share tidak bisa diakses: $baseDir");
+    $runStatus = 'fatal';
     fwrite(STDERR, "Share tidak bisa diakses: $baseDir\n");
     exit(1);
 }
@@ -139,6 +137,7 @@ try {
     ]);
 } catch (Throwable $e) {
     $sendFatal('MySQL tidak bisa dihubungi: ' . $e->getMessage());
+    $runStatus = 'fatal';
     fwrite(STDERR, "MySQL tidak bisa dihubungi\n");
     exit(1);
 }
@@ -187,6 +186,7 @@ if ($collected['skippedOld'] > 0) {
 $groups = $collected['groups'];
 if ($groups === []) {
     $log('tidak ada file baru');
+    $runStatus = 'no-new-files';
     echo "Tidak ada file baru\n";
     exit(0);
 }
@@ -216,7 +216,7 @@ foreach ($groups as $group) {
         (string) $period
     );
     $log('preview: ' . implode(' ', array_map(static fn($p) => str_contains($p, ' ') ? '"' . $p . '"' : $p, $cmd)));
-    $result = va_run($cmd);
+    $result = va_run_process($cmd);
     foreach (array_slice(array_filter(explode("\n", trim($result['stdout']))), -3) as $line) {
         $log('  preview> ' . $line);
     }
@@ -278,7 +278,7 @@ foreach ($groups as $group) {
     $rootCsv = va_skip_csv_path($period);
     @unlink($rootCsv); // jangan pernah membaca CSV basi dari run sebelumnya
 
-    $record = va_run(va_build_record_command(PHP_BINARY, $xlsPath, $period, $group['files'], $auditUserId));
+    $record = va_run_process(va_build_record_command(PHP_BINARY, $xlsPath, $period, $group['files'], $auditUserId));
     $recordLines = array_filter(explode("\n", trim($record['stdout'])));
     foreach (array_slice($recordLines, 0, 40) as $line) {
         $log('  record> ' . $line);
@@ -362,11 +362,13 @@ foreach ($groups as $group) {
 
 if ($dryRun) {
     $log('dry-run: berhenti setelah preview, state tidak diubah');
+    $runStatus = 'dry-run';
 }
 
 /* --- Email laporan ------------------------------------------------------- */
 if ($runGroups === []) {
     $log('tidak ada hasil untuk dilaporkan');
+    if (!$dryRun) $runStatus = 'no-results';
     exit(0);
 }
 
@@ -380,16 +382,19 @@ $skipSignature = va_skip_signature($allSkips);
 
 if ($noEmail) {
     $log('email dilewati (--no-email)');
+    $runStatus = 'no-email';
     exit(0);
 }
 if ($recipients === []) {
     $log('email dilewati: recipients kosong di va_daily.config.php');
+    $runStatus = 'no-recipients';
     exit(0);
 }
 
 $sameSkips = ($state['lastSkipSignature'] ?? null) === $skipSignature && ($state['lastSkipDate'] ?? null) === $today;
 if ($bookedCount === 0 && $sameSkips) {
     $log('email tidak dikirim: tidak ada booking baru dan skip identik dengan email terakhir hari ini');
+    $runStatus = 'done';
     echo "Tidak ada perubahan (skip identik), email tidak dikirim\n";
     exit(0);
 }
@@ -421,3 +426,4 @@ if ($sent && !$dryRun) {
 if ($sent) {
     echo "Email terkirim: {$report['subject']}\n";
 }
+$runStatus = 'done';

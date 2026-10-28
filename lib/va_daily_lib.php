@@ -410,6 +410,50 @@ function va_state_write(string $path, array $state): void {
     }
 }
 
+/**
+ * Jalankan subprocess tanpa risiko deadlock: stdout/stderr ditampung di file.
+ *
+ * @return array{code:int,stdout:string,stderr:string}
+ */
+function va_run_process(array $cmd): array {
+    $outFile = tempnam(sys_get_temp_dir(), 'vaout');
+    $errFile = tempnam(sys_get_temp_dir(), 'vaerr');
+    if ($outFile === false || $errFile === false) {
+        return ['code' => -1, 'stdout' => '', 'stderr' => 'gagal membuat file sementara'];
+    }
+    $proc = proc_open($cmd, [1 => ['file', $outFile, 'w'], 2 => ['file', $errFile, 'w']], $pipes);
+    $code = is_resource($proc) ? (int) proc_close($proc) : -1;
+    $stdout = (string) @file_get_contents($outFile);
+    $stderr = (string) @file_get_contents($errFile);
+    @unlink($outFile);
+    @unlink($errFile);
+    return ['code' => $code, 'stdout' => $stdout, 'stderr' => $stderr];
+}
+
+/**
+ * Ambil lock eksklusif non-blocking. Lock otomatis lepas saat proses/PHP selesai.
+ *
+ * @return resource|false
+ */
+function va_acquire_lock(string $path) {
+    $dir = dirname($path);
+    if (!is_dir($dir)) @mkdir($dir, 0777, true);
+    $fp = @fopen($path, 'c');
+    if ($fp === false) return false;
+    if (!@flock($fp, LOCK_EX | LOCK_NB)) {
+        fclose($fp);
+        return false;
+    }
+    return $fp;
+}
+
+function va_release_lock($handle): void {
+    if (is_resource($handle)) {
+        @flock($handle, LOCK_UN);
+        fclose($handle);
+    }
+}
+
 function va_collect_candidates(array $files, array $state, int $sinceTs): array {
     $known = (array) ($state['files'] ?? []);
     $groups = [];
