@@ -125,5 +125,14 @@ $fail = va_watchdog_build_report([
 ]);
 cek('subject gagal watchdog', strpos($fail['subject'], 'GAGAL WATCHDOG') !== false, true);
 
+$nf = va_watchdog_build_report([
+    'date' => '2026-10-29', 'slots' => [['time' => '17:00']], 'files' => [],
+    'slot_reasons' => ['17:00' => 'notify-failed'],
+    'catchup' => ['ran' => false, 'ok' => false, 'summary' => ''],
+    'error' => null,
+]);
+cek('html menjelaskan notifikasi gagal terkirim', strpos($nf['html'], 'gagal terkirim') !== false, true);
+cek('teks telegram menjelaskan notifikasi gagal', strpos($nf['text'], 'gagal kirim') !== false, true);
+
 echo $gagal === 0 ? "OK $total test\n" : "GAGAL $gagal dari $total test\n";
 exit($gagal === 0 ? 0 : 1);

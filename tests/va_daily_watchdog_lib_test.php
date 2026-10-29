@@ -26,6 +26,8 @@ cek('parse dua run', count($runs), 2);
 cek('run pertama fatal', [$runs[0]['finished'], $runs[0]['status']], [true, 'fatal']);
 cek('run kedua selesai', [$runs[1]['finished'], $runs[1]['status']], [true, 'done']);
 cek('run tanpa penanda belum selesai', va_watchdog_parse_runs('[2026-10-28 09:31:09] === run ===')[0]['finished'], false);
+$runsMode = va_watchdog_parse_runs("[2026-10-28 13:43:14] === run === (no-email)\n[2026-10-28 13:43:15] === run selesai: no-email ===\n");
+cek('run dengan penanda mode tetap terbaca', [count($runsMode), $runsMode[0]['status'] ?? null], [1, 'no-email']);
 
 $due = [['time' => '09:30', 'ts' => 1000], ['time' => '13:00', 'ts' => 2000]];
 $runs = [
@@ -40,6 +42,21 @@ cek('status fatal tidak menutup slot', array_column(va_watchdog_unfinished_slots
 cek('run telat menutup slot sebelumnya', va_watchdog_unfinished_slots(
     [['time' => '09:30', 'ts' => 1000]],
     [['start_ts' => 1900, 'finished' => true, 'status' => 'done']]
+), []);
+cek('status notify-failed tidak menutup slot', array_column(va_watchdog_unfinished_slots(
+    [['time' => '17:00', 'ts' => 1000]],
+    [['start_ts' => 1100, 'finished' => true, 'status' => 'notify-failed']]
+), 'time'), ['17:00']);
+cek('alasan slot yang gagal notifikasi', va_watchdog_slot_failure_reasons(
+    [['time' => '13:00', 'ts' => 500], ['time' => '17:00', 'ts' => 1000]],
+    [
+        ['start_ts' => 600, 'finished' => true, 'status' => 'done'],
+        ['start_ts' => 1100, 'finished' => true, 'status' => 'notify-failed'],
+    ]
+), ['17:00' => 'notify-failed']);
+cek('slot tanpa penanda tidak punya alasan', va_watchdog_slot_failure_reasons(
+    [['time' => '09:30', 'ts' => 1000]],
+    [['start_ts' => 1100, 'finished' => false, 'status' => null]]
 ), []);
 
 $now = time();

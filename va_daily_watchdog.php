@@ -141,23 +141,35 @@ $inspect = static function () use ($scheduleTimes, $now, $graceMinutes, $runLogP
     $nowTs = $now->getTimestamp();
     $pending = va_watchdog_pending_files($files, $state, $nowTs - $lookbackDays * 86400, $nowTs - $staleHours * 3600);
 
-    return ['slots' => $slots, 'files' => $pending, 'error' => $error];
+    return ['slots' => $slots, 'files' => $pending, 'error' => $error, 'runs' => $runs];
 };
 
 $inspectResult = $inspect();
 $slots = $inspectResult['slots'];
 $files = $inspectResult['files'];
 $error = $inspectResult['error'];
+$runs = (array) ($inspectResult['runs'] ?? []);
+$slotReasons = va_watchdog_slot_failure_reasons($slots, $runs);
 
-foreach ($slots as $slot) $log('slot ' . $slot['time'] . ' belum selesai');
+foreach ($slots as $slot) {
+    $reason = (string) ($slotReasons[(string) $slot['time']] ?? '');
+    $log('slot ' . $slot['time'] . ' belum selesai' . ($reason !== '' ? ' (' . $reason . ')' : ''));
+}
 foreach ($files as $file) $log('file menunggu: ' . $file['name']);
 
 /* --- Auto catch-up -------------------------------------------------------- */
 $catchup = ['ran' => false, 'ok' => false, 'summary' => ''];
 $importBusy = false;
 $hasProblems = $slots !== [] || $files !== [];
+/* Catch-up tidak bisa mengirim ulang laporan; slot yang hanya gagal kirim
+   notifikasi tetap dilaporkan tanpa menjalankan import ulang. */
+$catchupSlots = array_values(array_filter(
+    $slots,
+    static fn(array $slot): bool => (string) ($slotReasons[(string) ($slot['time'] ?? '')] ?? '') !== 'notify-failed'
+));
+$needCatchup = $files !== [] || $catchupSlots !== [];
 
-if ($hasProblems && $autoCatchUp && !$noCatchUp && !$dryRun) {
+if ($hasProblems && $autoCatchUp && !$noCatchUp && !$dryRun && $needCatchup) {
     $probe = va_acquire_lock($workDir . '/va_daily.lock');
     if ($probe === false) {
         $importBusy = true;
@@ -193,6 +205,8 @@ if ($hasProblems && $autoCatchUp && !$noCatchUp && !$dryRun) {
         $slots = $inspectResult['slots'];
         $files = $inspectResult['files'];
         $error = $inspectResult['error'];
+        $runs = (array) ($inspectResult['runs'] ?? []);
+        $slotReasons = va_watchdog_slot_failure_reasons($slots, $runs);
         $hasProblems = $slots !== [] || $files !== [];
     }
 }
@@ -202,6 +216,7 @@ $report = va_watchdog_build_report([
     'date' => $nowDate,
     'slots' => $slots,
     'files' => $files,
+    'slot_reasons' => $slotReasons,
     'catchup' => $catchup,
     'error' => $error,
 ]);

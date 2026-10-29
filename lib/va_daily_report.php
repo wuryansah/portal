@@ -228,11 +228,19 @@ function va_watchdog_build_report(array $data): array {
     foreach ($slots as $slot) $slotTimes[] = (string) (is_array($slot) ? ($slot['time'] ?? '') : $slot);
     $fileNames = [];
     foreach ($files as $file) $fileNames[] = (string) (is_array($file) ? ($file['name'] ?? '') : $file);
+    $slotReasons = (array) ($data['slot_reasons'] ?? []);
+    $notifyFailed = [];
+    foreach ($slotTimes as $time) {
+        if ((string) ($slotReasons[$time] ?? '') === 'notify-failed') $notifyFailed[] = $time;
+    }
 
     if ($error !== null) {
         $subject = '[VA Harian] GAGAL WATCHDOG ' . $dmy . ' — ' . substr(preg_replace('/\s+/', ' ', (string) $error), 0, 120);
     } elseif ($ran && $catchupOk && $slots === [] && $files === []) {
         $subject = '[VA Harian] ' . $dmy . ' — catch-up: ' . ($summary !== '' ? substr($summary, 0, 120) : 'selesai');
+    } elseif ($slotTimes !== [] && count($notifyFailed) === count($slotTimes)) {
+        $subject = '[VA Harian] PERINGATAN ' . $dmy . ' — laporan ' . implode(', ', array_slice($notifyFailed, 0, 4))
+            . ' gagal terkirim (email + Telegram)';
     } else {
         $slotLabel = $slotTimes !== []
             ? ' (' . implode(', ', array_slice($slotTimes, 0, 4)) . (count($slotTimes) > 4 ? ', …' : '') . ')'
@@ -267,7 +275,11 @@ function va_watchdog_build_report(array $data): array {
         $html .= '<h3>Run terjadwal belum selesai (' . count($slotTimes) . ')</h3>';
         $html .= '<table><tr><th>Slot</th><th>Keterangan</th></tr>';
         foreach ($slotTimes as $time) {
-            $html .= '<tr><td>' . $e($time) . '</td><td>tidak ada penanda <code>=== run selesai ===</code> yang sukses</td></tr>';
+            $reason = (string) ($slotReasons[$time] ?? '');
+            $note = $reason === 'notify-failed'
+                ? 'laporan email + Telegram gagal terkirim (semua kanal gagal)'
+                : 'tidak ada penanda <code>=== run selesai ===</code> yang sukses';
+            $html .= '<tr><td>' . $e($time) . '</td><td>' . $note . '</td></tr>';
         }
         $html .= '</table>';
     }
@@ -295,7 +307,13 @@ function va_watchdog_build_report(array $data): array {
     $esc = static fn(string $v): string => str_replace(['&', '<', '>'], ['&amp;', '&lt;', '&gt;'], $v);
     $text = $esc($subject) . "\nTanggal: $dmy";
     if ($slotTimes !== []) {
-        $text .= "\nRun belum selesai: " . $esc(implode(', ', $slotTimes));
+        $labels = [];
+        foreach ($slotTimes as $time) {
+            $labels[] = (string) ($slotReasons[$time] ?? '') === 'notify-failed'
+                ? $time . ' (gagal kirim notifikasi)'
+                : $time;
+        }
+        $text .= "\nRun belum selesai: " . $esc(implode(', ', $labels));
     }
     if ($fileNames !== []) {
         $shown = array_slice($fileNames, 0, 20);

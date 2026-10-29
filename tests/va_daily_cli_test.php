@@ -108,6 +108,8 @@ cek('run tanpa file baru tetap exit 0', $code3, 0);
 cek('run tanpa file baru melaporkan alasannya', strpos($logBaru, 'tidak ada file bank baru') !== false, true);
 cek('run tanpa file baru tetap mencoba email', strpos($logBaru, 'EMAIL GAGAL') !== false, true);
 cek('run tanpa file baru tetap mencoba telegram', strpos($logBaru, 'TELEGRAM GAGAL') !== false, true);
+cek('semua kanal gagal menandai run notify-failed', strpos($logBaru, '=== run selesai: notify-failed ===') !== false, true);
+cek('semua kanal gagal dicatat eksplisit', strpos($logBaru, 'notifikasi GAGAL di semua kanal') !== false, true);
 
 /* Lock: proses lain harus gagal mengambil lock yang sama. */
 $lockPath = $work . '/va_daily.lock';

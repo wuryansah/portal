@@ -17,12 +17,31 @@ function mailerConfig(): array {
     ];
 }
 
-function sendMail(string $to, string $subject, string $html): array {
+/**
+ * Kegagalan sementara (jaringan/SMTP) boleh dicoba ulang; input salah tidak.
+ * Dipakai sendMail() dan aman dipanggil dengan hasil apa pun.
+ */
+function mailerRetryable(array $result): bool {
+    if (!empty($result['ok'])) return false;
+    $error = strtolower(trim((string) ($result['error'] ?? '')));
+    if ($error === 'invalid recipient') return false;
+    return true;
+}
+
+function sendMail(string $to, string $subject, string $html, int $attempts = 2): array {
     $cfg = mailerConfig();
     if (!filter_var($to, FILTER_VALIDATE_EMAIL)) return ['ok' => false, 'error' => 'invalid recipient'];
     if ($cfg['from'] === '' || !filter_var($cfg['from'], FILTER_VALIDATE_EMAIL)) $cfg['from'] = 'no-reply@localhost';
-    if ($cfg['host'] === '') return mailerSendPhp($to, $subject, $html, $cfg);
-    return mailerSendSmtp($to, $subject, $html, $cfg);
+    $attempts = max(1, $attempts);
+    $result = ['ok' => false, 'error' => 'not attempted'];
+    for ($attempt = 0; $attempt < $attempts; $attempt++) {
+        $result = $cfg['host'] === ''
+            ? mailerSendPhp($to, $subject, $html, $cfg)
+            : mailerSendSmtp($to, $subject, $html, $cfg);
+        if (!mailerRetryable($result)) return $result;
+        if ($attempt + 1 < $attempts) usleep(500000);
+    }
+    return $result;
 }
 
 function mailerSendPhp(string $to, string $subject, string $html, array $cfg): array {

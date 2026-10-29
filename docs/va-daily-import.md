@@ -84,8 +84,12 @@ Minggu: script langsung keluar (`Bukan hari kerja`) tanpa memproses apa pun.
 
 Setiap run `va_daily.php` menulis penanda `=== run selesai: <status> ===` ke log
 harian lewat shutdown handler. Status yang mungkin: `ok`, `done`, `dry-run`,
-`no-email`, `no-recipients`, `not-workday`, `fatal`.
+`no-email`, `no-recipients`, `not-workday`, `notify-failed`, `fatal`.
 
+- `notify-failed` dipakai saat email **dan** Telegram dua-duanya gagal terkirim.
+  Slot itu **tidak** dianggap selesai, jadi watchdog memperingatkan admin pada
+  pemeriksaan berikutnya (tanpa menjalankan catch-up, karena import ulang tidak
+  bisa mengirim ulang laporan).
 - Proses yang dibunuh paksa (`TerminateProcess`, mesin restart, task dihentikan)
   **tidak** menulis penanda → watchdog menganggap slot itu belum selesai.
 - `va_daily.lock` mencegah dua import berjalan bersamaan (double booking). Bila
@@ -100,13 +104,17 @@ Telegram normal; ia hanya bekerja saat ada masalah.
 1. Ambil `watchdog.lock`. Bila watchdog lain berjalan, keluar (`exit 0`).
 2. Hitung slot jadwal yang sudah lewat grace (`watchdog_grace_minutes`, default 20).
 3. Baca `logs/<tanggal>.log`: slot dianggap selesai hanya bila ada `=== run ===`
-   yang ditutup `=== run selesai: <status> ===` dengan status selain `fatal`.
+   yang ditutup `=== run selesai: <status> ===` dengan status yang menutup slot
+   (`fatal` dan `notify-failed` tidak menutup slot).
 4. Pindai share (folder induk + bulan berjalan/sebelumnya) untuk file dalam
    `lookback_days` yang belum tercatat di `state.json` dan umurnya >
    `stale_file_hours` (default 2 jam).
 5. Bila ada masalah **dan** tidak ada import yang sedang berjalan (cek
    `va_daily.lock`): jalankan `php va_daily.php --no-email` sekali (catch-up).
-   Email untuk catch-up dikirim oleh watchdog, bukan oleh proses anak.
+   Email untuk catch-up dikirim oleh watchdog, bukan oleh proses anak. Bila
+   masalahnya hanya `notify-failed` (laporan gagal terkirim), catch-up dilewati
+   karena import ulang tidak mengirim ulang laporan; watchdog langsung
+   memperingatkan.
 6. Periksa ulang log/state. Kirim notifikasi:
    - catch-up berhasil → subjek `[VA Harian] <tgl> — catch-up: <hasil>`;
    - masalah tersisa / catch-up gagal → subjek `[VA Harian] PERINGATAN ...` atau
@@ -152,6 +160,9 @@ lewat Telegram. Telegram tidak aktif bila token/chat ID kosong — email tetap j
 Aturan kirimnya sama dengan email: **setiap slot** (09:30/13:00/17:00) laporan
 dikirim, termasuk saat tidak ada file bank baru atau 0 dibukukan. `--no-email`
 mematikan kedua kanal sekaligus; `--no-telegram` hanya mematikan Telegram.
+Email dicoba ulang sekali (jeda 0,5 detik) bila gagal karena jaringan/SMTP;
+Telegram juga dua percobaan. Bila **kedua kanal** tetap gagal, run ditutup
+dengan status `notify-failed` supaya watchdog mengirim peringatan.
 
 1. Buat bot lewat [@BotFather](https://t.me/BotFather) → `/newbot` → salin token.
 2. Kirim satu pesan ke bot, lalu buka
@@ -228,6 +239,7 @@ Edit `va_daily.config.php`:
 | Email tidak masuk | Cek log: `EMAIL GAGAL`; SMTP diatur di `.env` (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_ENC`, `MAIL_FROM`). Kirim ulang manual dengan `php va_daily.php --since-days 1` setelah memperbaiki SMTP (state sudah selesai, jadi pakai `--since-days` + reset entri state bila perlu). |
 | Telegram tidak masuk | Cek log: `telegram dilewati: token/chat id kosong` (isi `.env`) atau `TELEGRAM GAGAL: <alasan>` (token salah / bot belum di grup / jaringan). Uji cepat: `php -r "require 'env.php'; require 'lib/notifier.php'; var_export(sendTelegram('Tes VA Harian.'));"`. Email tetap terkirim walau Telegram gagal. |
 | Email tidak masuk padahal ada booking | Cek `EMAIL GAGAL` di log, lalu uji SMTP. Sejak laporan dikirim tiap slot, tidak masuknya email berarti masalah kanal (SMTP/Telegram), bukan dedupe. |
+| Laporan tidak masuk sama sekali (email + Telegram) | Log berakhir `notifikasi GAGAL di semua kanal` + `=== run selesai: notify-failed ===`. Slot tidak dianggap selesai, jadi watchdog (20 menit kemudian) mengirim `PERINGATAN ... gagal terkirim`. Cek `logs/watchdog-<tgl>.log`; bila jaringan sudah normal jalankan `php va_daily.php` untuk mengirim laporan baru. |
 | Banyak skip `duplicate` | Normal untuk file yang sudah pernah dibukukan (mis. setelah backfill). Cek hanya bila ada nominal/tanggal yang janggal. |
 | Alert watchdog tidak masuk padahal ada masalah | Cek `logs/watchdog-<tgl>.log`: `notifikasi dilewati` (signature sama hari itu → pakai `--force`), `EMAIL GAGAL`, `TELEGRAM GAGAL`, atau `import sedang berjalan`. |
 | Watchdog terus melaporkan slot belum selesai | Log harian tidak punya `=== run selesai ===` untuk slot itu (proses mati). Jalankan `php va_daily.php`, atau biarkan catch-up bekerja. |

@@ -455,7 +455,13 @@ if ($sent && !$dryRun) {
     $state['lastRun'] = date('c');
     va_state_write($statePath, $state);
 }
+if (!$sent) {
+    /* Email dan Telegram dua-duanya gagal: jangan tutup slot, biar watchdog
+       memperingatkan admin pada pemeriksaan berikutnya. */
+    $log('notifikasi GAGAL di semua kanal (email + telegram)');
+    $runStatus = 'notify-failed';
+}
 if ($sent) {
     echo "Email terkirim: {$report['subject']}\n";
 }
-$runStatus = 'done';
+if ($runStatus !== 'notify-failed') $runStatus = 'done';

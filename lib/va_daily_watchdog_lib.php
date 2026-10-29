@@ -45,7 +45,7 @@ function va_watchdog_parse_runs(string $logText): array {
         $ts = strtotime($stamp);
         if ($ts === false) continue;
 
-        if (preg_match('/^=== run ===$/', $message)) {
+        if (preg_match('/^=== run ===(?:\s.*)?$/', $message)) {
             if ($current !== null) $runs[] = $current;
             $current = [
                 'started_at' => $stamp,
@@ -67,6 +67,41 @@ function va_watchdog_parse_runs(string $logText): array {
 }
 
 /**
+ * Status run yang menutup slot jadwal. `fatal` dan `notify-failed` sengaja
+ * tidak menutup slot supaya watchdog tetap memperingatkan admin.
+ */
+function va_watchdog_status_closes_slot(string $status): bool {
+    return !in_array(trim($status), ['fatal', 'notify-failed'], true);
+}
+
+/**
+ * Alasan slot belum selesai berdasarkan status run terakhir di rentang slot itu.
+ * Slot tanpa run / run tanpa penanda selesai tidak diberi alasan.
+ *
+ * @param array<int,array{time:string,ts:int}> $slots
+ * @param array<int,array{start_ts:int,finished:bool,status:?string}> $runs
+ * @return array<string,string> slot time => status run
+ */
+function va_watchdog_slot_failure_reasons(array $slots, array $runs): array {
+    $out = [];
+    $count = count($slots);
+    foreach ($slots as $i => $slot) {
+        $start = (int) ($slot['ts'] ?? 0);
+        $next = $i + 1 < $count ? (int) ($slots[$i + 1]['ts'] ?? PHP_INT_MAX) : PHP_INT_MAX;
+        $time = (string) ($slot['time'] ?? '');
+        if ($time === '') continue;
+        foreach ($runs as $run) {
+            $runStart = (int) ($run['start_ts'] ?? 0);
+            if ($runStart < $start || $runStart >= $next) continue;
+            if (empty($run['finished'])) continue;
+            $status = (string) ($run['status'] ?? '');
+            if (!va_watchdog_status_closes_slot($status)) $out[$time] = $status;
+        }
+    }
+    return $out;
+}
+
+/**
  * Slot yang belum ditutup run sukses. Run dengan status `fatal` tidak menutup slot.
  *
  * @param array<int,array{time:string,ts:int}> $slots
@@ -83,7 +118,7 @@ function va_watchdog_unfinished_slots(array $slots, array $runs): array {
         foreach ($runs as $run) {
             $runStart = (int) ($run['start_ts'] ?? 0);
             if ($runStart < $start || $runStart >= $next) continue;
-            if (!empty($run['finished']) && (string) ($run['status'] ?? '') !== 'fatal') {
+            if (!empty($run['finished']) && va_watchdog_status_closes_slot((string) ($run['status'] ?? ''))) {
                 $covered = true;
                 break;
             }
