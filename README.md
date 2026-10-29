@@ -103,6 +103,15 @@ The portal includes specialized import tools for VA bank records:
 - `import_va_record.php` - Process and record payments from VA files
 - Skipped rows during import are written to review CSV files (e.g., `va_skip_review_*.csv`) for admin review
 
+### VA Payment File References (Sep/Oct 2026)
+
+Example VA transaction text files from the shared network location:
+
+```text
+\\10.10.21.222\pom\FINANCE - AR\AR & Collection\Virtual Account\Virtual Account 2026\Virtual TXT\10. Oktober\Ruko 01 Oktober 2026.txt
+\\10.10.21.222\pom\FINANCE - AR\AR & Collection\Virtual Account\Virtual Account 2026\Virtual TXT\10. Oktober\Mall 01 Oktober 2026.txt
+```
+
 > See the included skills (in `.opencode/skills/va-import-review/`) for detailed import review procedures.
 
 ## Project Structure
