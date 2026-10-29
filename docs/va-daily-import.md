@@ -35,10 +35,11 @@ pembukuan otomatis ke billing, dan laporan email harian.
    ditandai selesai sehingga otomatis diproses lagi setelah billing dibuat.
 6. **Diff.** Baris yang benar-benar dibukukan = baris preview (matched) − baris skip CSV,
    sehingga laporan tidak pernah mengklaim baris skip sebagai "dibukukan".
-7. **Email + Telegram.** Dikirim bila ada pembayaran baru **atau** daftar skip berubah
-   pada hari itu. Laporan yang sama dikirim ke email lalu Telegram (ringkasannya saja).
-   Skip identik tidak dikirim ulang (dedupe `lastSkipSignature`/`lastSkipDate` di state).
-   Kegagalan keras (share/MySQL mati) dikirim sekali per pesan identik per hari.
+7. **Email + Telegram di setiap slot.** Laporan selalu dikirim pada tiap run
+   (09:30 / 13:00 / 17:00, Senin-Sabtu) lewat email lalu Telegram — termasuk saat
+   tidak ada file bank baru atau tidak ada transaksi. Alasan "kosong" masuk ke
+   bagian **Catatan** laporan. Kegagalan keras (share/MySQL mati) dikirim sebagai
+   alert gagal, sekali per pesan identik per hari.
    Bila salah satu kanal berhasil, dedupe disimpan supaya tidak dobel tiap run.
 8. **State.** `data/va_daily/state.json` menandai file selesai (nama file → mtime/size,
    periode, jumlah dibukukan). Ditulis atomik (temp + rename).
@@ -82,8 +83,8 @@ Minggu: script langsung keluar (`Bukan hari kerja`) tanpa memproses apa pun.
 ### Penanda selesai & lock
 
 Setiap run `va_daily.php` menulis penanda `=== run selesai: <status> ===` ke log
-harian lewat shutdown handler. Status yang mungkin: `ok`, `done`, `no-new-files`,
-`no-results`, `dry-run`, `no-email`, `no-recipients`, `not-workday`, `fatal`.
+harian lewat shutdown handler. Status yang mungkin: `ok`, `done`, `dry-run`,
+`no-email`, `no-recipients`, `not-workday`, `fatal`.
 
 - Proses yang dibunuh paksa (`TerminateProcess`, mesin restart, task dihentikan)
   **tidak** menulis penanda → watchdog menganggap slot itu belum selesai.
@@ -148,8 +149,9 @@ Email dan Telegram sama-sama dipakai: setiap laporan harian yang dikirim lewat e
 juga dikirim ke Telegram sebagai ringkasan (jumlah & nominal dibukukan, ringkasan
 alasan skip, unit yang butuh tindakan, file). Alert fatal dan alert watchdog juga
 lewat Telegram. Telegram tidak aktif bila token/chat ID kosong — email tetap jalan.
-Aturan kirimnya sama dengan email (tidak dikirim bila tidak ada booking baru dan
-skip tidak berubah), dan `--no-email` mematikan kedua kanal sekaligus.
+Aturan kirimnya sama dengan email: **setiap slot** (09:30/13:00/17:00) laporan
+dikirim, termasuk saat tidak ada file bank baru atau 0 dibukukan. `--no-email`
+mematikan kedua kanal sekaligus; `--no-telegram` hanya mematikan Telegram.
 
 1. Buat bot lewat [@BotFather](https://t.me/BotFather) → `/newbot` → salin token.
 2. Kirim satu pesan ke bot, lalu buka
@@ -225,7 +227,7 @@ Edit `va_daily.config.php`:
 | `BOOKING TIDAK DILAPORKAN ...` | `import_va_record.php` mengaku ada skip tetapi `va_skip_review_<period>.csv` tidak ada/kosong (mis. root repo tidak bisa ditulis). File tidak ditandai selesai; perbaiki izin tulis lalu jalankan ulang. Script menolak mengklaim "dibukukan" tanpa data skip. |
 | Email tidak masuk | Cek log: `EMAIL GAGAL`; SMTP diatur di `.env` (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_ENC`, `MAIL_FROM`). Kirim ulang manual dengan `php va_daily.php --since-days 1` setelah memperbaiki SMTP (state sudah selesai, jadi pakai `--since-days` + reset entri state bila perlu). |
 | Telegram tidak masuk | Cek log: `telegram dilewati: token/chat id kosong` (isi `.env`) atau `TELEGRAM GAGAL: <alasan>` (token salah / bot belum di grup / jaringan). Uji cepat: `php -r "require 'env.php'; require 'lib/notifier.php'; var_export(sendTelegram('Tes VA Harian.'));"`. Email tetap terkirim walau Telegram gagal. |
-| Email tidak dikirim padahal ada file | Normal bila tidak ada booking baru dan skip identik dengan email terakhir hari itu. Bukti ada di log: `email tidak dikirim: ...`. |
+| Email tidak masuk padahal ada booking | Cek `EMAIL GAGAL` di log, lalu uji SMTP. Sejak laporan dikirim tiap slot, tidak masuknya email berarti masalah kanal (SMTP/Telegram), bukan dedupe. |
 | Banyak skip `duplicate` | Normal untuk file yang sudah pernah dibukukan (mis. setelah backfill). Cek hanya bila ada nominal/tanggal yang janggal. |
 | Alert watchdog tidak masuk padahal ada masalah | Cek `logs/watchdog-<tgl>.log`: `notifikasi dilewati` (signature sama hari itu → pakai `--force`), `EMAIL GAGAL`, `TELEGRAM GAGAL`, atau `import sedang berjalan`. |
 | Watchdog terus melaporkan slot belum selesai | Log harian tidak punya `=== run selesai ===` untuk slot itu (proses mati). Jalankan `php va_daily.php`, atau biarkan catch-up bekerja. |

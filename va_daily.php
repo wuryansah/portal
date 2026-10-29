@@ -85,6 +85,7 @@ $state = va_state_read($statePath);
 $auditUserId = (int) $config['audit_user_id'];
 $recipients = array_values(array_filter((array) ($config['recipients'] ?? [])));
 $runGroups = [];
+$runNotes = [];
 $today = date('Y-m-d');
 
 /**
@@ -203,9 +204,8 @@ if ($collected['skippedOld'] > 0) {
 $groups = $collected['groups'];
 if ($groups === []) {
     $log('tidak ada file baru');
-    $runStatus = 'no-new-files';
+    $runNotes[] = 'tidak ada file bank baru pada run ini';
     echo "Tidak ada file baru\n";
-    exit(0);
 }
 
 $monthNames = va_month_names();
@@ -239,6 +239,7 @@ foreach ($groups as $group) {
     }
     if ($result['code'] !== 0) {
         $log('preview GAGAL (exit ' . $result['code'] . '): ' . trim($result['stderr']));
+        $runNotes[] = "preview gagal: $label";
         echo "PREVIEW GAGAL $label\n";
         continue;
     }
@@ -249,7 +250,8 @@ foreach ($groups as $group) {
     $rows = va_preview_row_count($xlsPath);
     $fileCount = count($group['files']);
     if ($rows === 0) {
-        $log("preview $label: 0 baris (tidak dilaporkan sebagai hasil)");
+        $log("preview $label: 0 baris (tetap dilaporkan sebagai tanpa transaksi)");
+        $runNotes[] = "preview 0 baris: $label";
         continue;
     }
     $log("preview $label: $rows baris, $fileCount file, xls=$xlsPath");
@@ -380,20 +382,20 @@ foreach ($groups as $group) {
 if ($dryRun) {
     $log('dry-run: berhenti setelah preview, state tidak diubah');
     $runStatus = 'dry-run';
-}
-
-/* --- Email laporan ------------------------------------------------------- */
-if ($runGroups === []) {
-    $log('tidak ada hasil untuk dilaporkan');
-    if (!$dryRun) $runStatus = 'no-results';
     exit(0);
 }
 
+/* --- Email + Telegram ----------------------------------------------------
+   Laporan dikirim di SETIAP slot (Senin-Sabtu), termasuk saat tidak ada file
+   bank baru / tidak ada transaksi, supaya admin tetap punya bukti run jalan.
+   Bila tidak ada hasil, alasannya masuk ke bagian "Catatan". */
+
 $allSkips = [];
-$bookedCount = 0;
 foreach ($runGroups as $groupResult) {
-    $bookedCount += count($groupResult['booked']);
     foreach ($groupResult['skips'] as $skip) $allSkips[] = $skip;
+}
+if ($runGroups === [] && $runNotes === []) {
+    $runNotes[] = 'tidak ada transaksi baru pada run ini';
 }
 $skipSignature = va_skip_signature($allSkips);
 
@@ -408,20 +410,16 @@ if ($recipients === [] && $noTelegram) {
     exit(0);
 }
 
-$sameSkips = ($state['lastSkipSignature'] ?? null) === $skipSignature && ($state['lastSkipDate'] ?? null) === $today;
-if ($bookedCount === 0 && $sameSkips) {
-    $log('email tidak dikirim: tidak ada booking baru dan skip identik dengan email terakhir hari ini');
-    $runStatus = 'done';
-    echo "Tidak ada perubahan (skip identik), email tidak dikirim\n";
-    exit(0);
-}
-
 $report = va_build_report([
     'date' => $today,
     'dryRun' => $dryRun,
     'groups' => $runGroups,
     'fatal' => null,
+    'notes' => $runNotes,
 ]);
+if ($runNotes !== []) {
+    $log('catatan run: ' . implode('; ', $runNotes));
+}
 $results = va_send_report($report, $recipients);
 $sent = false;
 foreach ($results as $to => $result) {

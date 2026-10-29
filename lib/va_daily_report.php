@@ -43,11 +43,12 @@ CSS;
 }
 
 /**
- * @param array $run ['date','dryRun','groups','fatal']
+ * @param array $run ['date','dryRun','groups','fatal','notes']
  *   groups[]: ['folder','period','periodRows','files','booked','skips']
  *   booked[]: ['unit','reference','amount','txn_date','source_file']
  *   skips[]:  ['unit_number','va_number','amount','txn_date','txn_time','source_file','reason']
- * @return array{subject:string,html:string}
+ *   notes[]:  alasan run tanpa hasil (mis. 'tidak ada file bank baru pada run ini')
+ * @return array{subject:string,html:string,text:string}
  */
 function va_build_report(array $run): array {
     $e = static fn($v): string => htmlspecialchars((string) $v, ENT_QUOTES, 'UTF-8');
@@ -57,6 +58,11 @@ function va_build_report(array $run): array {
     $groups = (array) ($run['groups'] ?? []);
     $fatal = $run['fatal'] ?? null;
     $dryRun = !empty($run['dryRun']);
+    $notes = [];
+    foreach ((array) ($run['notes'] ?? []) as $note) {
+        $note = trim((string) $note);
+        if ($note !== '') $notes[] = $note;
+    }
 
     $booked = [];
     $skips = [];
@@ -116,6 +122,10 @@ function va_build_report(array $run): array {
     $html .= '<tr><th>Dibukukan</th><td>' . $e(count($booked)) . ' pembayaran (' . $e(va_money($total)) . ')</td></tr>';
     $html .= '<tr><th>Di-skip</th><td>' . $e(count($skips)) . '</td></tr>';
     $html .= '</table>';
+
+    if ($notes !== []) {
+        $html .= '<p class="muted"><strong>Catatan:</strong> ' . $e(implode('; ', $notes)) . '</p>';
+    }
 
     if ($periods !== []) {
         $html .= '<h3>Periode &amp; file</h3><table><tr><th>Periode</th><th>Billing</th><th>File</th></tr>';
@@ -188,7 +198,8 @@ function va_build_report(array $run): array {
         'html' => $html,
         'text' => va_report_text([
             'subject' => $subject, 'date' => $dmy, 'dryRun' => $dryRun, 'fatal' => null,
-            'periods' => $periods, 'booked' => $booked, 'skips' => $skips, 'files' => $files, 'total' => $total,
+            'periods' => $periods, 'booked' => $booked, 'skips' => $skips, 'files' => $files,
+            'total' => $total, 'notes' => $notes,
         ]),
     ];
 }
@@ -360,6 +371,10 @@ function va_report_text(array $d): string {
     }
 
     if ($d['dryRun']) $lines[] = 'DRY RUN: tidak ada yang dibukukan.';
+    foreach ((array) ($d['notes'] ?? []) as $note) {
+        $note = trim((string) $note);
+        if ($note !== '') $lines[] = 'Catatan: ' . $esc($note);
+    }
     $lines[] = 'Rincian lengkap ada di email.';
 
     $text = implode("\n", $lines);

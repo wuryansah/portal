@@ -75,6 +75,40 @@ cek('run no-email menulis penanda selesai', strpos((string) file_get_contents($l
 cek('--no-email juga melewati telegram', strpos((string) file_get_contents($logFile), 'notifikasi dilewati (--no-email)') !== false, true);
 cek('--no-email tidak mencoba telegram', strpos((string) file_get_contents($logFile), 'telegram terkirim') === false, true);
 
+/* --- Setiap slot tetap melapor walau tidak ada file/transaksi baru -------- */
+clearstatcache();
+$stateLengkap = va_state_read($statePath);
+foreach (glob($fixture . '/*.txt') ?: [] as $pathFile) {
+    $stateLengkap['files'][basename($pathFile)] = [
+        'mtime' => (int) filemtime($pathFile), 'size' => (int) filesize($pathFile),
+        'period' => 'Oct-26', 'booked' => 0, 'at' => date('c'),
+    ];
+}
+va_state_write($statePath, $stateLengkap);
+$logSebelum = (string) file_get_contents($logFile);
+
+/* SMTP & Telegram sengaja dibuat gagal: test tidak boleh mengirim pesan nyata. */
+$envUji = getenv();
+$envUji['SMTP_HOST'] = '127.0.0.1';
+$envUji['SMTP_PORT'] = '9';
+$envUji['SMTP_USER'] = '';
+$envUji['SMTP_PASS'] = '';
+$envUji['SMTP_ENC'] = 'none';
+$envUji['MAIL_FROM'] = 'noreply@example.test';
+$envUji['TELEGRAM_BOT_TOKEN'] = '1:token-palsu';
+$envUji['TELEGRAM_CHAT_ID'] = '1';
+$cmd3 = [$php, $root . '/va_daily.php', '--base-dir', $fixture, '--work-dir', $work, '--since-days', '30'];
+$proc = proc_open($cmd3, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null, $envUji);
+$out3 = stream_get_contents($pipes[1]);
+$err3 = stream_get_contents($pipes[2]);
+$code3 = proc_close($proc);
+$logBaru = substr((string) file_get_contents($logFile), strlen($logSebelum));
+
+cek('run tanpa file baru tetap exit 0', $code3, 0);
+cek('run tanpa file baru melaporkan alasannya', strpos($logBaru, 'tidak ada file bank baru') !== false, true);
+cek('run tanpa file baru tetap mencoba email', strpos($logBaru, 'EMAIL GAGAL') !== false, true);
+cek('run tanpa file baru tetap mencoba telegram', strpos($logBaru, 'TELEGRAM GAGAL') !== false, true);
+
 /* Lock: proses lain harus gagal mengambil lock yang sama. */
 $lockPath = $work . '/va_daily.lock';
 $lock = va_acquire_lock($lockPath);

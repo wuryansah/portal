@@ -85,6 +85,13 @@ $besar = va_build_report(['date' => '2026-10-23', 'dryRun' => false, 'fatal' => 
 ]]]);
 cek('teks telegram muat batas karakter', strlen($besar['text'] ?? '') > 0 && strlen($besar['text'] ?? '') <= 4000, true);
 
+/* Run tanpa transaksi tetap punya laporan yang menjelaskan alasannya. */
+$kosong = va_build_report(['date' => '2026-10-29', 'dryRun' => false, 'groups' => [], 'fatal' => null,
+    'notes' => ['tidak ada file bank baru']]);
+cek('subjek laporan kosong tetap rapi', strpos($kosong['subject'], '0 dibukukan') !== false, true);
+cek('html menjelaskan tidak ada file baru', strpos($kosong['html'], 'tidak ada file bank baru') !== false, true);
+cek('teks telegram menjelaskan tidak ada file baru', strpos($kosong['text'], 'tidak ada file bank baru') !== false, true);
+
 /* --- Kirim Telegram ------------------------------------------------------- */
 putenv('TELEGRAM_BOT_TOKEN');
 putenv('TELEGRAM_CHAT_ID');

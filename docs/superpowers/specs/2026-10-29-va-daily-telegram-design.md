@@ -59,3 +59,22 @@ Mulai 29-10-2026 laporan harian harus sampai di **email dan Telegram**.
 - Susunan kalimat `text` (ringkas, bahasa Indonesia, angka Rupiah format `va_money`).
 - Batas jumlah baris ringkasan skip yang ditampilkan.
 - Penyesuaian dokumentasi `docs/va-daily-import.md`.
+
+## Perubahan lanjutan (29-10-2026, setelah review user)
+
+Semula laporan hanya dikirim bila ada booking baru atau daftar skip berubah
+(opsi A). User meminta laporan **selalu** masuk walau tidak ada transaksi, dengan
+frekuensi **setiap slot** 09:30 / 13:00 / 17:00 (bukan hanya sekali sehari).
+
+Keputusan baru:
+
+- `va_daily.php` tidak lagi berhenti di `no-new-files`/`no-results`; ia tetap
+  menyusun laporan dengan `notes` (mis. `tidak ada file bank baru pada run ini`,
+  `preview gagal: <label>`, `preview 0 baris: <label>`) lalu mengirim email +
+  Telegram.
+- Dedupe "skip identik" tidak lagi menahan pengiriman; dedupe tetap disimpan
+  hanya untuk alert fatal.
+- `--dry-run` tetap tidak mengirim apa pun; `--no-email` mematikan kedua kanal.
+- Efek operasional: 3 laporan/hari (Senin-Sabtu), masing-masing ±1 pesan email
+  dan 1 pesan Telegram, termasuk hari tanpa transaksi.
+
