@@ -45,6 +45,7 @@ $config = require __DIR__ . '/va_daily.config.php';
 
 $dryRun = va_cli_flag($args, 'dry-run');
 $noEmail = va_cli_flag($args, 'no-email');
+$noTelegram = va_cli_flag($args, 'no-telegram');
 $forcedPeriod = va_cli_arg($args, 'period');
 $sinceDays = (int) (va_cli_arg($args, 'since-days', (string) $config['lookback_days']));
 $baseDir = (string) va_cli_arg($args, 'base-dir', $config['base_dir']);
@@ -87,11 +88,14 @@ $runGroups = [];
 $today = date('Y-m-d');
 
 /**
- * Laporkan kegagalan keras lewat email (sekali per pesan identik per hari).
+ * Laporkan kegagalan keras lewat email + Telegram (sekali per pesan identik per hari).
  */
-$sendFatal = static function (string $message) use (&$state, $statePath, $recipients, $noEmail, $log, $today, $dryRun): void {
+$sendFatal = static function (string $message) use (&$state, $statePath, $recipients, $noEmail, $noTelegram, $log, $today, $dryRun): void {
     $log('FATAL: ' . $message);
-    if ($noEmail || $recipients === []) return;
+    if ($noEmail) {
+        $log('notifikasi fatal dilewati (--no-email)');
+        return;
+    }
     $sig = sha1((string) preg_replace('/\s+/', ' ', $message));
     if (($state['lastFatalSignature'] ?? null) === $sig && ($state['lastFatalDate'] ?? null) === $today) {
         $log('alert fatal identik sudah dikirim hari ini, tidak diulang');
@@ -106,6 +110,19 @@ $sendFatal = static function (string $message) use (&$state, $statePath, $recipi
             $log("alert email terkirim ke $to");
         } else {
             $log("EMAIL GAGAL ke $to: " . ($result['error'] ?? 'unknown'));
+        }
+    }
+    if ($noTelegram) {
+        $log('alert telegram dilewati (--no-telegram)');
+    } else {
+        $tg = va_send_report_telegram($report);
+        if (!empty($tg['ok'])) {
+            $sent = true;
+            $log('alert telegram terkirim');
+        } elseif (($tg['error'] ?? '') === 'telegram not configured') {
+            $log('alert telegram dilewati: token/chat id kosong');
+        } else {
+            $log('TELEGRAM GAGAL: ' . ($tg['error'] ?? 'unknown'));
         }
     }
     if ($sent) {
@@ -381,12 +398,12 @@ foreach ($runGroups as $groupResult) {
 $skipSignature = va_skip_signature($allSkips);
 
 if ($noEmail) {
-    $log('email dilewati (--no-email)');
+    $log('notifikasi dilewati (--no-email)');
     $runStatus = 'no-email';
     exit(0);
 }
-if ($recipients === []) {
-    $log('email dilewati: recipients kosong di va_daily.config.php');
+if ($recipients === [] && $noTelegram) {
+    $log('notifikasi dilewati: recipients kosong di va_daily.config.php dan --no-telegram');
     $runStatus = 'no-recipients';
     exit(0);
 }
@@ -414,6 +431,23 @@ foreach ($results as $to => $result) {
     } else {
         $log("EMAIL GAGAL ke $to: " . ($result['error'] ?? 'unknown'));
         fwrite(STDERR, "Email gagal ke $to\n");
+    }
+}
+
+/* Telegram: kanal kedua, aturan kirim sama dengan email. Gagal di sini tidak
+   boleh menggagalkan booking/email — hanya dicatat di log. */
+if ($noTelegram) {
+    $log('telegram dilewati (--no-telegram)');
+} else {
+    $tg = va_send_report_telegram($report);
+    if (!empty($tg['ok'])) {
+        $log('telegram terkirim');
+        $sent = true;
+    } elseif (($tg['error'] ?? '') === 'telegram not configured') {
+        $log('telegram dilewati: token/chat id kosong');
+    } else {
+        $log('TELEGRAM GAGAL: ' . ($tg['error'] ?? 'unknown'));
+        fwrite(STDERR, "Telegram gagal: " . ($tg['error'] ?? 'unknown') . "\n");
     }
 }
 

@@ -13,7 +13,7 @@ pembukuan otomatis ke billing, dan laporan email harian.
 | Jadwal import | Senin-Sabtu, 09:30 / 13:00 / 17:00 (`M2S VA Daily Import`) |
 | Jadwal watchdog | Senin-Sabtu, 09:50 / 13:20 / 17:20 (`M2S VA Daily Watchdog`) |
 | Penerima laporan | `wuryansah@manggaduasquare.co.id` (ubah di `va_daily.config.php`) |
-| Kanal alert | Email (utama) + Telegram (opsional, dari `.env`) |
+| Kanal laporan | Email + Telegram (Telegram aktif bila `.env` diisi) |
 | Artefak runtime | `data/va_daily/` (di-ignore git, berisi data keuangan) |
 | Booking | Otomatis, setara `import_va_record.php --yes` |
 
@@ -35,9 +35,11 @@ pembukuan otomatis ke billing, dan laporan email harian.
    ditandai selesai sehingga otomatis diproses lagi setelah billing dibuat.
 6. **Diff.** Baris yang benar-benar dibukukan = baris preview (matched) − baris skip CSV,
    sehingga laporan tidak pernah mengklaim baris skip sebagai "dibukukan".
-7. **Email.** Dikirim bila ada pembayaran baru **atau** daftar skip berubah pada hari itu.
+7. **Email + Telegram.** Dikirim bila ada pembayaran baru **atau** daftar skip berubah
+   pada hari itu. Laporan yang sama dikirim ke email lalu Telegram (ringkasannya saja).
    Skip identik tidak dikirim ulang (dedupe `lastSkipSignature`/`lastSkipDate` di state).
    Kegagalan keras (share/MySQL mati) dikirim sekali per pesan identik per hari.
+   Bila salah satu kanal berhasil, dedupe disimpan supaya tidak dobel tiap run.
 8. **State.** `data/va_daily/state.json` menandai file selesai (nama file → mtime/size,
    periode, jumlah dibukukan). Ditulis atomik (temp + rename).
 
@@ -64,7 +66,8 @@ salinannya ada di `data/va_daily/skips/`.
 ```powershell
 php va_daily.php                      # sama seperti jadwal (booking + email)
 php va_daily.php --dry-run            # preview saja: tidak menulis DB, tidak mengubah state
-php va_daily.php --no-email           # booking tanpa kirim email
+php va_daily.php --no-email           # booking tanpa email/Telegram
+php va_daily.php --no-telegram        # kirim email saja (tanpa Telegram)
 php va_daily.php --period "Oct-26"    # paksa periode billing
 php va_daily.php --since-days 21      # perluas lookback (backfill)
 php va_daily.php --base-dir "D:\contoh folder"   # pakai folder lain (uji coba)
@@ -90,8 +93,8 @@ harian lewat shutdown handler. Status yang mungkin: `ok`, `done`, `no-new-files`
 ## Watchdog (deteksi + catch-up otomatis)
 
 `va_daily_watchdog.php` berjalan 20 menit setelah setiap run utama
-(09:50 / 13:20 / 17:20, Senin-Sabtu). Ia **tidak** menggantikan laporan email
-normal; ia hanya bekerja saat ada masalah.
+(09:50 / 13:20 / 17:20, Senin-Sabtu). Ia **tidak** menggantikan laporan email +
+Telegram normal; ia hanya bekerja saat ada masalah.
 
 1. Ambil `watchdog.lock`. Bila watchdog lain berjalan, keluar (`exit 0`).
 2. Hitung slot jadwal yang sudah lewat grace (`watchdog_grace_minutes`, default 20).
@@ -139,9 +142,14 @@ Log keputusan: `data\va_daily\logs\watchdog-<yyyy-mm-dd>.log`.
 'auto_catch_up' => true,
 ```
 
-### Telegram (opsional, tambahan)
+### Telegram (laporan harian + alert)
 
-Email tetap kanal utama. Telegram hanya dipakai bila token dan chat ID diisi.
+Email dan Telegram sama-sama dipakai: setiap laporan harian yang dikirim lewat email
+juga dikirim ke Telegram sebagai ringkasan (jumlah & nominal dibukukan, ringkasan
+alasan skip, unit yang butuh tindakan, file). Alert fatal dan alert watchdog juga
+lewat Telegram. Telegram tidak aktif bila token/chat ID kosong — email tetap jalan.
+Aturan kirimnya sama dengan email (tidak dikirim bila tidak ada booking baru dan
+skip tidak berubah), dan `--no-email` mematikan kedua kanal sekaligus.
 
 1. Buat bot lewat [@BotFather](https://t.me/BotFather) → `/newbot` → salin token.
 2. Kirim satu pesan ke bot, lalu buka
@@ -159,8 +167,8 @@ Email tetap kanal utama. Telegram hanya dipakai bila token dan chat ID diisi.
    php -r "require 'env.php'; require 'lib/notifier.php'; var_export(sendTelegram('Tes notifikasi VA Harian.'));"
    ```
 
-Bila token salah / jaringan mati, email tetap terkirim dan watchdog hanya
-mencatat `TELEGRAM GAGAL` di log.
+Bila token salah / jaringan mati, email tetap terkirim dan log mencatat
+`TELEGRAM GAGAL` (import/booking tidak ikut gagal).
 
 ## Pemasangan / ubah jadwal
 
@@ -215,7 +223,8 @@ Edit `va_daily.config.php`:
 | `TANPA PERIODE ... (tidak ada di billing)` | `billing_period` untuk bulan itu belum dibuat. Buat billing massal periode tsb, lalu jalankan ulang; baris akan diproses (tidak ada booking yang hilang). |
 | `BOOKING GAGAL ...` | Lihat `record>` di log. File tidak ditandai selesai sehingga dicoba lagi pada run berikutnya. |
 | `BOOKING TIDAK DILAPORKAN ...` | `import_va_record.php` mengaku ada skip tetapi `va_skip_review_<period>.csv` tidak ada/kosong (mis. root repo tidak bisa ditulis). File tidak ditandai selesai; perbaiki izin tulis lalu jalankan ulang. Script menolak mengklaim "dibukukan" tanpa data skip. |
-| Email tidak masuk | Cek `EMAIL GAGAL` di log; SMTP diatur di `.env` (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_ENC`, `MAIL_FROM`). Kirim ulang manual dengan `php va_daily.php --since-days 1` setelah memperbaiki SMTP (state sudah selesai, jadi pakai `--since-days` + reset entri state bila perlu). |
+| Email tidak masuk | Cek log: `EMAIL GAGAL`; SMTP diatur di `.env` (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_ENC`, `MAIL_FROM`). Kirim ulang manual dengan `php va_daily.php --since-days 1` setelah memperbaiki SMTP (state sudah selesai, jadi pakai `--since-days` + reset entri state bila perlu). |
+| Telegram tidak masuk | Cek log: `telegram dilewati: token/chat id kosong` (isi `.env`) atau `TELEGRAM GAGAL: <alasan>` (token salah / bot belum di grup / jaringan). Uji cepat: `php -r "require 'env.php'; require 'lib/notifier.php'; var_export(sendTelegram('Tes VA Harian.'));"`. Email tetap terkirim walau Telegram gagal. |
 | Email tidak dikirim padahal ada file | Normal bila tidak ada booking baru dan skip identik dengan email terakhir hari itu. Bukti ada di log: `email tidak dikirim: ...`. |
 | Banyak skip `duplicate` | Normal untuk file yang sudah pernah dibukukan (mis. setelah backfill). Cek hanya bila ada nominal/tanggal yang janggal. |
 | Alert watchdog tidak masuk padahal ada masalah | Cek `logs/watchdog-<tgl>.log`: `notifikasi dilewati` (signature sama hari itu → pakai `--force`), `EMAIL GAGAL`, `TELEGRAM GAGAL`, atau `import sedang berjalan`. |

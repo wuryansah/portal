@@ -72,6 +72,8 @@ cek('tidak ada error di stderr', trim($err2), '');
 cek('--no-email tidak mengirim email', strpos($out2, 'Email terkirim') === false, true);
 cek('--no-email tidak mencatat dedupe email', va_state_read($statePath)['lastSkipSignature'], null);
 cek('run no-email menulis penanda selesai', strpos((string) file_get_contents($logFile), '=== run selesai: no-email ===') !== false, true);
+cek('--no-email juga melewati telegram', strpos((string) file_get_contents($logFile), 'notifikasi dilewati (--no-email)') !== false, true);
+cek('--no-email tidak mencoba telegram', strpos((string) file_get_contents($logFile), 'telegram terkirim') === false, true);
 
 /* Lock: proses lain harus gagal mengambil lock yang sama. */
 $lockPath = $work . '/va_daily.lock';

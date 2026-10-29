@@ -58,6 +58,38 @@ $capped = va_build_report(['date' => '2026-10-23', 'dryRun' => false, 'fatal' =>
 cek('tabel dibatasi 200 baris', substr_count($capped['html'], 'VA-'), 200);
 cek('catatan baris tersisa', strpos($capped['html'], '50 baris lain') !== false, true);
 
+/* --- Teks Telegram untuk laporan harian ----------------------------------- */
+cek('laporan punya teks telegram', is_string($mail['text'] ?? null), true);
+cek('teks telegram memuat tanggal', strpos($mail['text'] ?? '', '23-10-2026') !== false, true);
+cek('teks telegram memuat jumlah dibukukan', strpos($mail['text'] ?? '', '1 dibukukan') !== false, true);
+cek('teks telegram memuat nominal', strpos($mail['text'] ?? '', 'Rp592.937') !== false, true);
+cek('teks telegram memuat periode', strpos($mail['text'] ?? '', 'Oct-26') !== false, true);
+cek('teks telegram memuat alasan skip', strpos($mail['text'] ?? '', 'no billing') !== false, true);
+cek('teks telegram memuat saran skip', strpos($mail['text'] ?? '', 'buat billing') !== false, true);
+
+cek('teks telegram dry run ditandai', strpos($dry['text'] ?? '', 'DRY RUN') !== false, true);
+cek('teks telegram alert gagal memuat alasan', strpos($fatal['text'] ?? '', 'MySQL tidak bisa dihubungi') !== false, true);
+cek('teks telegram di-escape', strlen($unsafe['text'] ?? '') > 0 && strpos($unsafe['text'] ?? '', '<script>') === false, true);
+cek('teks telegram memakai entity html', strpos($unsafe['text'] ?? '', '&lt;script&gt;') !== false, true);
+
+/* Batas keras Telegram 4096 karakter; ringkasan harus tetap muat. */
+$banyakSkip = [];
+for ($i = 0; $i < 400; $i++) {
+    $banyakSkip[] = ['unit_number' => 'GF-0C' . $i, 'va_number' => '4' . $i, 'amount' => 1234.0,
+        'txn_date' => '21/10/26', 'txn_time' => '09:10:00', 'source_file' => 'Mall 21 Oktober 2026.txt',
+        'reason' => $i % 2 === 0 ? 'no billing' : 'unmatched'];
+}
+$besar = va_build_report(['date' => '2026-10-23', 'dryRun' => false, 'fatal' => null, 'groups' => [[
+    'folder' => '10. Oktober', 'period' => 'Oct-26', 'periodRows' => 1, 'files' => ['a.txt', 'b.txt'],
+    'booked' => $many, 'skips' => $banyakSkip,
+]]]);
+cek('teks telegram muat batas karakter', strlen($besar['text'] ?? '') > 0 && strlen($besar['text'] ?? '') <= 4000, true);
+
+/* --- Kirim Telegram ------------------------------------------------------- */
+putenv('TELEGRAM_BOT_TOKEN');
+putenv('TELEGRAM_CHAT_ID');
+cek('kirim telegram laporan tanpa config gagal terkendali', va_send_report_telegram($mail), ['ok' => false, 'error' => 'telegram not configured']);
+
 /* --- Watchdog alert report ------------------------------------------------ */
 $r = va_watchdog_build_report([
     'date' => '2026-10-28',

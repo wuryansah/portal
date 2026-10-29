@@ -99,7 +99,14 @@ function va_build_report(array $run): array {
         $html .= '<p>Tindakan: pastikan Laragon/MySQL hidup dan share bank bisa diakses, lalu jalankan ulang '
             . '<code>php va_daily.php</code>. Tidak ada file yang ditandai selesai, jadi run berikutnya akan mengejar.</p>';
         $html .= '</body></html>';
-        return ['subject' => $subject, 'html' => $html];
+        return [
+            'subject' => $subject,
+            'html' => $html,
+            'text' => va_report_text([
+                'subject' => $subject, 'date' => $dmy, 'dryRun' => $dryRun, 'fatal' => (string) $fatal,
+                'periods' => [], 'booked' => [], 'skips' => [], 'files' => [], 'total' => 0.0,
+            ]),
+        ];
     }
 
     $html .= '<h3>Ringkasan</h3><table>';
@@ -176,14 +183,21 @@ function va_build_report(array $run): array {
     }
 
     $html .= '</body></html>';
-    return ['subject' => $subject, 'html' => $html];
+    return [
+        'subject' => $subject,
+        'html' => $html,
+        'text' => va_report_text([
+            'subject' => $subject, 'date' => $dmy, 'dryRun' => $dryRun, 'fatal' => null,
+            'periods' => $periods, 'booked' => $booked, 'skips' => $skips, 'files' => $files, 'total' => $total,
+        ]),
+    ];
 }
 
 /**
  * Pesan watchdog: alert masalah, hasil catch-up, atau kegagalan watchdog.
  *
  * @param array $data ['date','slots'=>[['time']],'files'=>[['name','mtime']],
- *                    'catchup'=>['ran','ok','summary'],'error'=>?string]
+ *                    'catchup'=>['ran','ok','summary'],'error'=>?string, 'daily'=>?array]
  * @return array{subject:string,html:string,text:string}
  */
 function va_watchdog_build_report(array $data): array {
@@ -198,6 +212,7 @@ function va_watchdog_build_report(array $data): array {
     $ran = !empty($catchup['ran']);
     $catchupOk = !empty($catchup['ok']);
     $summary = trim((string) ($catchup['summary'] ?? ''));
+    $daily = (array) ($data['daily'] ?? []);
     $slotTimes = [];
     foreach ($slots as $slot) $slotTimes[] = (string) (is_array($slot) ? ($slot['time'] ?? '') : $slot);
     $fileNames = [];
@@ -291,6 +306,73 @@ function va_watchdog_build_report(array $data): array {
 }
 
 /**
+ * Teks ringkas untuk Telegram (parse_mode=HTML). Dipotong agar muat batas 4096
+ * karakter Telegram; daftar file/alasan dibatasi lebih dulu.
+ *
+ * @param array{subject:string,date:string,dryRun:bool,fatal:?string,periods:array,booked:array,skips:array,files:array,total:float} $d
+ */
+function va_report_text(array $d): string {
+    $esc = static fn($v): string => str_replace(['&', '<', '>'], ['&amp;', '&lt;', '&gt;'], (string) $v);
+    $lines = ['<b>' . $esc($d['subject']) . '</b>'];
+    $lines[] = 'Tanggal: ' . $esc($d['date']);
+
+    if ($d['fatal'] !== null) {
+        $lines[] = 'Import gagal: ' . $esc(preg_replace('/\s+/', ' ', (string) $d['fatal']));
+        $lines[] = 'Tindakan: pastikan MySQL dan share bank hidup, lalu jalankan php va_daily.php.';
+        return implode("\n", $lines);
+    }
+
+    $periods = array_keys((array) $d['periods']);
+    $lines[] = 'Periode: ' . $esc($periods === [] ? '-' : implode(', ', $periods));
+    $lines[] = 'File diproses: ' . count((array) $d['files']);
+    $lines[] = 'Dibukukan: ' . count((array) $d['booked']) . ' pembayaran (' . va_money((float) $d['total']) . ')';
+    $lines[] = 'Skip: ' . count((array) $d['skips']);
+
+    $byReason = [];
+    foreach ((array) $d['skips'] as $row) $byReason[(string) ($row['reason'] ?? 'unknown')][] = $row;
+    if ($byReason !== []) {
+        $lines[] = 'Alasan skip:';
+        $shown = 0;
+        foreach ($byReason as $reason => $rows) {
+            if ($shown >= 10) break;
+            $period = (string) ($rows[0]['period'] ?? ($periods[0] ?? ''));
+            $lines[] = '- ' . $esc($reason) . ': ' . count($rows) . ' — ' . $esc(va_skip_advice($reason, $period));
+            $shown++;
+        }
+        if (count($byReason) > 10) $lines[] = '- … dan ' . (count($byReason) - 10) . ' alasan lain';
+
+        /* Baris yang butuh tindakan admin: tampilkan unitnya (maks 12). */
+        $perlu = [];
+        foreach ((array) $d['skips'] as $row) {
+            if (in_array(strtolower(trim((string) ($row['reason'] ?? ''))), ['duplicate', 'duplicate amount'], true)) continue;
+            $perlu[] = trim((string) ($row['unit_number'] ?? '')) . ' (' . (string) ($row['reason'] ?? '') . ')';
+        }
+        if ($perlu !== []) {
+            $lines[] = 'Perlu tindakan: ' . $esc(implode(', ', array_slice($perlu, 0, 12)))
+                . (count($perlu) > 12 ? ' … dan ' . (count($perlu) - 12) . ' lainnya' : '');
+        }
+    }
+
+    $names = array_keys((array) $d['files']);
+    if ($names !== []) {
+        $shown = array_slice($names, 0, 10);
+        $lines[] = 'File: ' . $esc(implode(', ', $shown)) . (count($names) > 10 ? ' … dan ' . (count($names) - 10) . ' file lain' : '');
+    }
+
+    if ($d['dryRun']) $lines[] = 'DRY RUN: tidak ada yang dibukukan.';
+    $lines[] = 'Rincian lengkap ada di email.';
+
+    $text = implode("\n", $lines);
+    if (strlen($text) > 4000) {
+        $text = substr($text, 0, 3990);
+        $cut = strrpos($text, "\n");
+        if ($cut !== false && $cut > 0) $text = substr($text, 0, $cut);
+        $text .= "\n… (dipotong)";
+    }
+    return $text;
+}
+
+/**
  * Kirim laporan ke semua penerima; coba sekali lagi bila gagal.
  *
  * @return array<string,array{ok:bool,error?:string}>
@@ -309,4 +391,21 @@ function va_send_report(array $report, array $recipients): array {
         $results[$to] = $result;
     }
     return $results;
+}
+
+/**
+ * Kirim teks laporan ke Telegram. Tidak pernah melempar fatal: bila token/chat id
+ * kosong atau jaringan gagal, hasilnya array dengan ok=false.
+ *
+ * @return array{ok:bool,error?:string,raw?:string}
+ */
+function va_send_report_telegram(array $report): array {
+    require_once __DIR__ . '/notifier.php';
+    if (!telegramEnabled(telegramConfig())) {
+        return ['ok' => false, 'error' => 'telegram not configured'];
+    }
+    $text = trim((string) ($report['text'] ?? ''));
+    if ($text === '') $text = trim((string) ($report['subject'] ?? ''));
+    if ($text === '') return ['ok' => false, 'error' => 'empty report text'];
+    return sendTelegram($text);
 }
